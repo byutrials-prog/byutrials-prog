@@ -27,6 +27,7 @@ const productsCol = collection(db, 'products');
 const transactionsCol = collection(db, 'transactions');
 const mutationsCol = collection(db, 'mutations');
 const usersCol = collection(db, 'users');
+const customersCol = collection(db, 'customers');
 const metaCol = collection(db, 'meta');
 
 // ==========================================
@@ -119,6 +120,17 @@ export const subscribeToUsers = (callback, onError) => {
   }, onError);
 };
 
+export const subscribeToCustomers = (callback, onError) => {
+  return onSnapshot(customersCol, (snapshot) => {
+    const customers = snapshot.docs.map((customerDoc) => ({
+      id: customerDoc.id,
+      ...customerDoc.data(),
+    }));
+    customers.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'id'));
+    callback(customers);
+  }, onError);
+};
+
 // ==========================================
 // Products CRUD
 // ==========================================
@@ -181,6 +193,13 @@ export const addUser = async (user) => {
   const docRef = doc(db, 'users', user.id);
   await setDoc(docRef, user);
   return user;
+};
+
+export const addCustomer = async (customer) => {
+  await authReady;
+  const customerRef = doc(db, 'customers', customer.id);
+  await setDoc(customerRef, customer);
+  return customer;
 };
 
 // ==========================================

@@ -12,17 +12,21 @@ import {
   Alert,
   SafeAreaView,
   StatusBar,
-  Dimensions,
+  Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Print from 'expo-print';
 import {
   subscribeToProducts,
   subscribeToTransactions,
   subscribeToMutations,
   subscribeToUsers,
+  subscribeToCustomers,
   addProduct as fbAddProduct,
   updateProduct as fbUpdateProduct,
   deleteProductFromDB,
@@ -31,10 +35,9 @@ import {
   addTransaction as fbAddTransaction,
   addMutation as fbAddMutation,
   addUser as fbAddUser,
+  addCustomer as fbAddCustomer,
   seedInitialData,
 } from './src/firebaseService';
-
-const { width } = Dimensions.get('window');
 
 const formatRp = (num) => {
   return 'Rp ' + (num || 0).toLocaleString('id-ID');
@@ -49,6 +52,16 @@ const formatDateInput = (dateObj) => {
   return [year, month.padStart(2, '0'), day.padStart(2, '0')].join('-');
 };
 
+const parseDateInput = (value) => {
+  const [year, month, day] = (value || '').split('-').map(Number);
+  if (!year || !month || !day) return null;
+  const date = new Date(year, month - 1, day);
+  if (formatDateInput(date) !== value) return null;
+  const now = new Date();
+  date.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), 0);
+  return date;
+};
+
 const getOffsetDate = (daysAgo = 0) => {
   const d = new Date();
   d.setDate(d.getDate() - daysAgo);
@@ -58,11 +71,34 @@ const getOffsetDate = (daysAgo = 0) => {
 const QRIS_IMAGE_URL = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=QRIS-DEMO-TIPSY-POINT';
 
 const DEFAULT_USERS = [
-  { id: 'U01', name: 'Windy', username: 'windy', password: 'admin123', role: 'Kasir' },
+  { id: 'U01', name: 'Mei', username: 'mei', password: 'admin123', role: 'Kasir' },
   { id: 'U02', name: 'Renal', username: 'renal', password: 'admin123', role: 'Kasir' },
 ];
 
 const escapeCsvValue = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}[character]));
+
+const buildReceiptHtml = ({ receiptNumber, date, detailsHtml, itemsHtml, subtotal, discount, total, paymentsHtml, extraHtml = '', footer = 'Terima kasih atas kunjungan Anda' }) => `
+  <!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+    @page{size:80mm auto;margin:0}*{box-sizing:border-box}body{width:80mm;margin:0 auto;color:#27313f;background:#fff;font:13px Arial,sans-serif}
+    .paper{padding:22px 17px}.brand{text-align:center;padding-bottom:15px;border-bottom:1px solid #e5e7eb}.mark{width:62px;height:62px;margin:0 auto 10px;border-radius:13px;background:#08090c;display:flex;align-items:center;justify-content:center;position:relative;color:#fff}
+    .mark:before{content:'';position:absolute;inset:6px;border:2px solid #f14be3;border-right-color:#55e8ed;border-radius:50%}.mark span{z-index:1;font-size:9px;font-weight:bold;text-align:center;line-height:1.05;color:#fff}
+    h1{font-size:21px;margin:0 0 6px}.contact{color:#758092;margin:4px 0}.meta{padding:12px 0;border-bottom:1px solid #e5e7eb}.row{display:flex;justify-content:space-between;gap:10px;margin:6px 0}.label{color:#758092}.value{text-align:right}.rule{border:0;border-top:1px solid #e5e7eb;margin:0}
+    .items{padding:8px 0}.item{padding:7px 0}.item-main{display:flex;justify-content:space-between;gap:10px;font-weight:600}.item-name{overflow-wrap:anywhere}.item-amount{white-space:nowrap}.item-detail{color:#758092;font-size:12px;margin-top:4px}
+    .totals{padding:10px 0;border-top:1px solid #e5e7eb}.discount{color:#d35d64}.grand{border-top:1px solid #e5e7eb;padding-top:10px;font-size:16px;font-weight:bold;color:#192230}.payments{padding:10px 0;border-bottom:1px solid #e5e7eb}.history-title{margin:10px 0 4px;font-size:13px}.stock-entry{padding:5px 0}.footer{text-align:center;color:#758092;font-style:italic;margin:15px 0 0}
+  </style></head><body><main class="paper">
+    <header class="brand"><div class="mark"><span>Tipsy<br>Point</span></div><h1>Tipsy Point</h1><p class="contact">Jalan Kepiting</p><p class="contact">Telp: 085196980785</p></header>
+    <section class="meta"><div class="row"><span class="label">No. Struk</span><strong class="value">${escapeHtml(receiptNumber)}</strong></div><div class="row"><span class="label">Tanggal</span><span class="value">${escapeHtml(date)}</span></div>${detailsHtml}</section>
+    <section class="items">${itemsHtml}</section>
+    <section class="totals"><div class="row"><span class="label">Subtotal</span><span class="value">${formatRp(subtotal)}</span></div><div class="row discount"><span>Diskon</span><span class="value">- ${formatRp(discount)}</span></div><div class="row grand"><span>TOTAL</span><span class="value">${formatRp(total)}</span></div></section>
+    <section class="payments">${paymentsHtml}</section><section class="stock-history">${extraHtml}</section><p class="footer">${escapeHtml(footer)}</p>
+  </main></body></html>`;
 
 const downloadCsv = async (filename, headers, rows) => {
   const csv = [headers, ...rows]
@@ -1194,6 +1230,7 @@ const INITIAL_MUTATIONS = [
 ];
 
 export default function App() {
+  const { height: windowHeight } = useWindowDimensions();
   const [activeTab, setActiveTab] = useState('pos');
 
   // Users & Multi-user session
@@ -1203,6 +1240,9 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isUserSwitchOpen, setIsUserSwitchOpen] = useState(false);
+  const [activeShiftId, setActiveShiftId] = useState(null);
+  const [closedShiftSummary, setClosedShiftSummary] = useState(null);
+  const [isShiftReceiptOpen, setIsShiftReceiptOpen] = useState(false);
   const [newUserName, setNewUserName] = useState('');
   const [newUserRole, setNewUserRole] = useState('Kasir');
   const [isAddingUser, setIsAddingUser] = useState(false);
@@ -1220,9 +1260,9 @@ export default function App() {
   // Firebase: Seed data & Real-time subscriptions
   // ==========================================
   useEffect(() => {
-    let unsubProducts, unsubTransactions, unsubMutations, unsubUsers;
+    let unsubProducts, unsubTransactions, unsubMutations, unsubUsers, unsubCustomers;
     let firebaseErrorShown = false;
-    let loadedFlags = { products: false, transactions: false, mutations: false, users: false };
+    let loadedFlags = { products: false, transactions: false, mutations: false, users: false, customers: false };
 
     const handleFirebaseError = (error) => {
       console.error('Firebase error:', error);
@@ -1233,6 +1273,7 @@ export default function App() {
       setTransactions(INITIAL_TRANSACTIONS);
       setMutations(INITIAL_MUTATIONS);
       setUsers(DEFAULT_USERS);
+      setCustomers([]);
       setIsLoading(false);
 
       const detail = error?.code === 'permission-denied'
@@ -1245,7 +1286,7 @@ export default function App() {
     };
 
     const checkAllLoaded = () => {
-      if (loadedFlags.products && loadedFlags.transactions && loadedFlags.mutations && loadedFlags.users) {
+      if (loadedFlags.products && loadedFlags.transactions && loadedFlags.mutations && loadedFlags.users && loadedFlags.customers) {
         setIsLoading(false);
       }
     };
@@ -1300,6 +1341,14 @@ export default function App() {
             checkAllLoaded();
           }
         }, handleFirebaseError);
+
+        unsubCustomers = subscribeToCustomers((data) => {
+          setCustomers(data);
+          if (!loadedFlags.customers) {
+            loadedFlags.customers = true;
+            checkAllLoaded();
+          }
+        }, handleFirebaseError);
       } catch (error) {
         handleFirebaseError(error);
       }
@@ -1313,6 +1362,7 @@ export default function App() {
       if (unsubTransactions) unsubTransactions();
       if (unsubMutations) unsubMutations();
       if (unsubUsers) unsubUsers();
+      if (unsubCustomers) unsubCustomers();
     };
   }, []);
 
@@ -1325,6 +1375,7 @@ export default function App() {
     }
 
     setCurrentUser(user);
+    setActiveShiftId(`SHIFT-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
     setLoginUsername('');
     setLoginPassword('');
     setLoginError('');
@@ -1332,8 +1383,127 @@ export default function App() {
 
   const handleLogout = () => {
     setCurrentUser(null);
+    setActiveShiftId(null);
     setActiveTab('pos');
     setCart([]);
+  };
+
+  const handleCloseShift = () => {
+    if (cart.length > 0) {
+      Alert.alert('Keranjang belum kosong', 'Selesaikan atau kosongkan transaksi sebelum menutup shift.');
+      return;
+    }
+
+    const shiftTransactions = transactions.filter((transaction) => transaction.shiftId === activeShiftId);
+    const shiftIncomingStock = mutations.filter((mutation) => mutation.shiftId === activeShiftId && mutation.type === 'in');
+    const itemSales = new Map();
+    const paymentTotals = new Map();
+    shiftTransactions.forEach((transaction) => {
+      transaction.items?.forEach((item) => {
+        const itemKey = `${item.productId || item.name}:${item.price}`;
+        const sale = itemSales.get(itemKey) || { ...item, qty: 0, amount: 0 };
+        sale.qty += item.qty || 0;
+        sale.amount += (item.price || 0) * (item.qty || 0);
+        itemSales.set(itemKey, sale);
+      });
+      const method = transaction.method || 'Lainnya';
+      paymentTotals.set(method, (paymentTotals.get(method) || 0) + (transaction.total || 0));
+    });
+
+    const summary = {
+      cashier: currentUser.name,
+      shiftId: activeShiftId,
+      closedAt: new Date(),
+      transactions: shiftTransactions,
+      items: [...itemSales.values()],
+      incomingStock: shiftIncomingStock.map((mutation) => ({
+        id: mutation.id,
+        name: products.find((product) => product.id === mutation.productId)?.name || mutation.productId,
+        qty: mutation.qty,
+        date: mutation.date,
+        note: mutation.note,
+      })),
+      subtotal: shiftTransactions.reduce((sum, transaction) => sum + (transaction.subtotal || transaction.total || 0), 0),
+      discount: shiftTransactions.reduce((sum, transaction) => sum + (transaction.discountAmount || 0), 0),
+      payments: [...paymentTotals.entries()].map(([method, amount]) => ({ method, amount })),
+      total: shiftTransactions.reduce((sum, transaction) => sum + (transaction.total || 0), 0),
+      cashTotal: shiftTransactions
+        .filter((transaction) => transaction.method === 'Tunai')
+        .reduce((sum, transaction) => sum + (transaction.total || 0), 0),
+      nonCashTotal: shiftTransactions
+        .filter((transaction) => transaction.method !== 'Tunai')
+        .reduce((sum, transaction) => sum + (transaction.total || 0), 0),
+      totalItems: shiftTransactions.reduce(
+        (sum, transaction) => sum + (transaction.items || []).reduce((itemSum, item) => itemSum + (item.qty || 0), 0),
+        0,
+      ),
+    };
+
+    setClosedShiftSummary(summary);
+    setIsUserSwitchOpen(false);
+    setIsShiftReceiptOpen(true);
+  };
+
+  const printShiftReceipt = async () => {
+    if (!closedShiftSummary) return;
+
+    const itemsHtml = `<h2 class="history-title">Barang Terjual</h2>${closedShiftSummary.items.length
+      ? closedShiftSummary.items.map((item) => `<article class="item"><div class="item-main"><span class="item-name">${escapeHtml(item.name)}</span><span class="item-amount">${formatRp(item.amount)}</span></div><div class="item-detail">${item.qty} pcs x ${formatRp(item.price)}</div></article>`).join('')
+      : '<p class="item-detail">Tidak ada penjualan pada shift ini.</p>'}`;
+    const incomingStockHtml = `<h2 class="history-title">Barang Masuk</h2>${closedShiftSummary.incomingStock.length
+      ? closedShiftSummary.incomingStock.map((item) => `<article class="stock-entry"><div class="item-main"><span class="item-name">${escapeHtml(item.name)}</span><span class="item-amount">+${item.qty} pcs</span></div><div class="item-detail">${item.date ? escapeHtml(new Date(item.date).toLocaleString('id-ID')) : ''}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</div></article>`).join('')
+      : '<p class="item-detail">Tidak ada barang masuk pada shift ini.</p>'}`;
+    const detailsHtml = `<div class="row"><span class="label">Kasir</span><span class="value">${escapeHtml(closedShiftSummary.cashier)}</span></div><div class="row"><span class="label">Jumlah transaksi</span><span class="value">${closedShiftSummary.transactions.length}</span></div><div class="row"><span class="label">Item terjual</span><span class="value">${closedShiftSummary.totalItems}</span></div>`;
+    const paymentsHtml = closedShiftSummary.payments.map(({ method, amount }) => `<div class="row"><span>${escapeHtml(method)}</span><span class="value">${formatRp(amount)}</span></div>`).join('');
+    const html = buildReceiptHtml({
+      receiptNumber: closedShiftSummary.shiftId,
+      date: closedShiftSummary.closedAt.toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      detailsHtml,
+      itemsHtml,
+      subtotal: closedShiftSummary.subtotal,
+      discount: closedShiftSummary.discount,
+      total: closedShiftSummary.total,
+      paymentsHtml,
+      extraHtml: incomingStockHtml,
+    });
+
+    try {
+      await Print.printAsync({ html });
+    } catch (error) {
+      console.error('Shift receipt print error:', error);
+      Alert.alert('Gagal mencetak struk shift', 'Pastikan printer atau layanan cetak perangkat tersedia, lalu coba lagi.');
+    }
+  };
+
+  const finishShiftAndLogout = () => {
+    setIsShiftReceiptOpen(false);
+    setClosedShiftSummary(null);
+    handleLogout();
+  };
+
+  const printCurrentReceipt = async () => {
+    if (!currentReceipt) return;
+
+    const itemsHtml = currentReceipt.items.map((item) => `<article class="item"><div class="item-main"><span class="item-name">${escapeHtml(item.name)}</span><span class="item-amount">${formatRp(item.price * item.qty)}</span></div><div class="item-detail">${item.qty} pcs x ${formatRp(item.price)}</div></article>`).join('');
+    const detailsHtml = `<div class="row"><span class="label">Pelanggan</span><span class="value">${escapeHtml(currentReceipt.customer?.name || 'Pelanggan Umum')}</span></div>`;
+    const paymentsHtml = `<div class="row"><span>${escapeHtml(currentReceipt.method || 'Pembayaran')}</span><span class="value">${formatRp(currentReceipt.total)}</span></div>${currentReceipt.method === 'Tunai' ? `<div class="row"><span class="label">Uang diterima</span><span class="value">${formatRp(currentReceipt.cashAmount)}</span></div><div class="row"><span class="label">Kembalian</span><span class="value">${formatRp(currentReceipt.changeAmount)}</span></div>` : ''}`;
+    const html = buildReceiptHtml({
+      receiptNumber: currentReceipt.id,
+      date: new Date(currentReceipt.date).toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      detailsHtml,
+      itemsHtml,
+      subtotal: currentReceipt.subtotal,
+      discount: currentReceipt.discountAmount,
+      total: currentReceipt.total,
+      paymentsHtml,
+    });
+
+    try {
+      await Print.printAsync({ html });
+    } catch (error) {
+      console.error('Transaction receipt print error:', error);
+      Alert.alert('Gagal mencetak struk', 'Pastikan printer atau layanan cetak perangkat tersedia, lalu coba lagi.');
+    }
   };
 
   const downloadSalesReport = () => {
@@ -1378,10 +1548,19 @@ export default function App() {
 
   // Period Filters
   const [selectedPeriod, setSelectedPeriod] = useState('month');
+  const [reportPeriod, setReportPeriod] = useState('day');
 
   // POS Kasir Cart & Modals
   const [cart, setCart] = useState([]);
   const [isCartModalOpen, setIsCartModalOpen] = useState(false);
+  const [customers, setCustomers] = useState([]);
+  const [selectedCustomer, setSelectedCustomer] = useState(null);
+  const [showCustomerOptions, setShowCustomerOptions] = useState(false);
+  const [isAddingCustomer, setIsAddingCustomer] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState('');
+  const [newCustomerPhone, setNewCustomerPhone] = useState('');
+  const [selectedTransactionDate, setSelectedTransactionDate] = useState(formatDateInput(new Date()));
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [posSearch, setPosSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [payMethod, setPayMethod] = useState('Tunai');
@@ -1494,6 +1673,363 @@ export default function App() {
     };
   }, [transactions, mutations, products, selectedPeriod]);
 
+  const reportData = useMemo(() => {
+    const now = new Date();
+    const inPeriod = (dateValue) => {
+      const date = new Date(dateValue);
+      if (reportPeriod === 'day') {
+        return formatDateInput(date) === formatDateInput(now);
+      }
+      return date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+    };
+    const periodTransactions = transactions.filter((transaction) => inPeriod(transaction.date));
+    const periodMutations = mutations.filter((mutation) => inPeriod(mutation.date));
+    const soldProducts = new Map();
+    const paymentSummary = new Map();
+
+    let revenue = 0;
+    let costOfGoodsSold = 0;
+    let discountTotal = 0;
+    periodTransactions.forEach((transaction) => {
+      revenue += transaction.total || 0;
+      discountTotal += transaction.discountAmount || 0;
+      const payment = paymentSummary.get(transaction.method) || { count: 0, total: 0 };
+      payment.count += 1;
+      payment.total += transaction.total || 0;
+      paymentSummary.set(transaction.method, payment);
+      (transaction.items || []).forEach((item) => {
+        const sold = soldProducts.get(item.productId) || {
+          id: item.productId,
+          name: item.name,
+          qty: 0,
+          total: 0,
+          hpp: 0,
+        };
+        sold.qty += item.qty || 0;
+        sold.total += (item.price || 0) * (item.qty || 0);
+        sold.hpp += (item.hpp || 0) * (item.qty || 0);
+        soldProducts.set(item.productId, sold);
+        costOfGoodsSold += (item.hpp || 0) * (item.qty || 0);
+      });
+    });
+
+    let stockPurchaseCashOut = 0;
+    let operationalLoss = 0;
+    periodMutations.forEach((mutation) => {
+      const product = products.find((item) => item.id === mutation.productId);
+      const unitCost = product?.hpp || 0;
+      if (mutation.type === 'in') stockPurchaseCashOut += unitCost * Math.max(0, mutation.qty || 0);
+      if (mutation.type === 'out') operationalLoss += unitCost * Math.max(0, mutation.qty || 0);
+      if (mutation.type === 'koreksi' && mutation.qty < 0) operationalLoss += unitCost * Math.abs(mutation.qty);
+    });
+
+    const grossProfit = revenue - costOfGoodsSold;
+    const netProfit = grossProfit - operationalLoss;
+    const estimatedNetCashFlow = revenue - stockPurchaseCashOut - operationalLoss;
+    const soldList = Array.from(soldProducts.values()).sort((a, b) => b.qty - a.qty);
+    const unsoldProducts = products.filter((product) => !soldProducts.has(product.id));
+
+    return {
+      periodTransactions,
+      periodMutations,
+      revenue,
+      costOfGoodsSold,
+      discountTotal,
+      grossProfit,
+      operationalLoss,
+      netProfit,
+      stockPurchaseCashOut,
+      estimatedNetCashFlow,
+      soldList,
+      unsoldProducts,
+      paymentSummary: Array.from(paymentSummary.entries()).map(([method, summary]) => ({ method, ...summary })),
+      periodLabel: reportPeriod === 'day'
+        ? `Harian - ${formatDateInput(now)}`
+        : `Bulanan - ${now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}`,
+    };
+  }, [transactions, mutations, products, reportPeriod]);
+
+  const downloadFinancialPdf = async () => {
+    const productRows = (items, emptyText) => items.length
+      ? items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.qty}</td><td>${formatRp(item.hpp)}</td><td>${formatRp(item.total)}</td><td>${formatRp(item.total - item.hpp)}</td></tr>`).join('')
+      : `<tr><td colspan="5">${emptyText}</td></tr>`;
+    const unsoldRows = reportData.unsoldProducts.length
+      ? reportData.unsoldProducts.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.category || '-')}</td><td>${item.stock}</td></tr>`).join('')
+      : '<tr><td colspan="3">Semua produk memiliki penjualan pada periode ini.</td></tr>';
+    const paymentRows = reportData.paymentSummary.length
+      ? reportData.paymentSummary.map((item) => `<tr><td>${escapeHtml(item.method || 'Tidak diketahui')}</td><td>${item.count}</td><td>${formatRp(item.total)}</td></tr>`).join('')
+      : '<tr><td colspan="3">Belum ada transaksi.</td></tr>';
+    const stockMutationRows = reportData.periodMutations.length
+      ? reportData.periodMutations.map((mutation) => {
+        const product = products.find((item) => item.id === mutation.productId);
+        const typeLabel = mutation.type === 'in' ? 'Stok masuk' : mutation.type === 'out' ? 'Stok keluar' : 'Koreksi stok';
+        const unitCost = product?.hpp || 0;
+        return `<tr><td>${escapeHtml(formatDateInput(mutation.date))}</td><td>${escapeHtml(typeLabel)}</td><td>${escapeHtml(product?.name || mutation.productId)}</td><td>${mutation.qty > 0 ? '+' : ''}${mutation.qty}</td><td>${formatRp(unitCost)}</td><td>${formatRp(Math.abs(mutation.qty || 0) * unitCost)}</td><td>${escapeHtml(mutation.operator || '-')}</td><td>${escapeHtml(mutation.note || '-')}</td></tr>`;
+      }).join('')
+      : '<tr><td colspan="8">Tidak ada mutasi stok pada periode ini.</td></tr>';
+    const transactionRows = reportData.periodTransactions.length
+      ? reportData.periodTransactions.map((transaction) => {
+        const items = transaction.items || [];
+        const itemSubtotal = items.reduce((sum, item) => sum + (item.price || 0) * (item.qty || 0), 0);
+        const subtotal = transaction.subtotal ?? itemSubtotal;
+        const discount = transaction.discountAmount || 0;
+        const total = transaction.total ?? Math.max(0, subtotal - discount);
+        const discountLabel = transaction.discountType === 'percent'
+          ? `${transaction.discountValue || 0}%`
+          : formatRp(transaction.discountValue || discount);
+        const itemRows = items.map((item) => {
+          const qty = item.qty || 0;
+          const sales = (item.price || 0) * qty;
+          const itemHpp = (item.hpp || 0) * qty;
+          return `<tr><td>${escapeHtml(item.name)}</td><td>${qty}</td><td>${formatRp(item.price || 0)}</td><td>${formatRp(item.hpp || 0)}</td><td>${formatRp(sales)}</td><td>${formatRp(itemHpp)}</td><td>${formatRp(sales - itemHpp)}</td></tr>`;
+        }).join('');
+        const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
+        const received = transaction.cashAmount ?? total;
+        return `<article class="transaction"><div class="transactionTitle"><strong>Transaksi ${escapeHtml(transaction.id)}</strong><strong>${formatRp(total)}</strong></div><div class="transactionMeta"><span>Tanggal: ${escapeHtml(new Date(transaction.date).toLocaleString('id-ID'))}</span><span>Kasir: ${escapeHtml(transaction.cashier || '-')}</span><span>Pelanggan: ${escapeHtml(customerName)}${transaction.customer?.phone ? ` (${escapeHtml(transaction.customer.phone)})` : ''}</span><span>Metode: ${escapeHtml(transaction.method || '-')}</span></div><table><thead><tr><th>Barang</th><th>Qty</th><th>Harga Jual/Unit</th><th>HPP/Unit</th><th>Penjualan</th><th>HPP</th><th>Laba Kotor</th></tr></thead><tbody>${itemRows || '<tr><td colspan="7">Rincian barang tidak tersedia.</td></tr>'}</tbody></table><div class="transactionTotals"><span>Subtotal: ${formatRp(subtotal)}</span><span>Diskon (${escapeHtml(discountLabel)}): -${formatRp(discount)}</span><strong>Total Tagihan: ${formatRp(total)}</strong><span>${transaction.method === 'Tunai' ? `Uang diterima: ${formatRp(received)}` : `Dibayar: ${formatRp(received)}`}</span>${transaction.method === 'Tunai' ? `<span>Kembalian: ${formatRp(transaction.changeAmount ?? Math.max(0, received - total))}</span>` : ''}</div></article>`;
+      }).join('')
+      : '<p>Belum ada penjualan pada periode ini.</p>';
+    const totalUnitsSold = reportData.soldList.reduce((sum, item) => sum + item.qty, 0);
+    const grossSales = reportData.soldList.reduce((sum, item) => sum + item.total, 0);
+    const cashTransactions = reportData.periodTransactions.filter((transaction) => transaction.method === 'Tunai');
+    const cashReceipts = cashTransactions.reduce((sum, transaction) => sum + (transaction.total || 0), 0);
+    const nonCashReceipts = reportData.revenue - cashReceipts;
+    const cashCollected = cashTransactions.reduce((sum, transaction) => sum + (transaction.cashAmount || 0), 0);
+    const cashChange = cashTransactions.reduce((sum, transaction) => sum + (transaction.changeAmount || 0), 0);
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#1f2937;font-size:9px;margin:0}h1{font-size:19px;margin:0 0 4px;color:#111827}h2{font-size:11px;margin:13px 0 5px;border-bottom:1px solid #9ca3af;padding-bottom:4px;color:#111827;break-after:avoid}.reportHeader{border-bottom:2px solid #047857;padding-bottom:8px;margin-bottom:8px}.subtitle{color:#4b5563;font-size:9px}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}.metric{padding:6px;border:1px solid #d1d5db}.metric span{display:block;color:#4b5563;font-size:8px}.metric strong{display:block;margin-top:3px;font-size:10px;color:#111827}p{line-height:1.4;margin:5px 0}table{width:100%;border-collapse:collapse;margin:4px 0 8px;table-layout:auto}thead{display:table-header-group}tr{break-inside:avoid;page-break-inside:avoid}th,td{border:1px solid #bfc5cc;padding:4px;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#eef5f1;color:#1f2937;font-size:8px}.transaction{border:1px solid #aeb6bf;padding:6px;margin:7px 0;break-inside:auto;page-break-inside:auto}.transactionTitle{display:flex;justify-content:space-between;gap:10px;font-size:10px;color:#111827}.transactionMeta{display:flex;flex-wrap:wrap;gap:4px 14px;color:#374151;font-size:8px;line-height:1.4;margin:5px 0}.transaction table{font-size:8px}.transactionTotals{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:5px;padding-top:5px;border-top:1px solid #cbd5e1;font-size:8px}.foot{margin-top:12px;padding-top:5px;border-top:1px solid #d1d5db;color:#4b5563;font-size:8px}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+      </style></head><body>
+      <header class="reportHeader"><h1>LAPORAN KEUANGAN DAN PENJUALAN</h1><div class="subtitle">${escapeHtml(reportData.periodLabel)} | Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</div></header>
+      <h2>Ringkasan Arus Kas dan Laba</h2><div class="grid">
+      <div class="metric"><span>Penjualan Sebelum Diskon</span><strong>${formatRp(grossSales)}</strong></div>
+      <div class="metric"><span>Penerimaan Setelah Diskon</span><strong>${formatRp(reportData.revenue)}</strong></div>
+      <div class="metric"><span>Arus Kas Bersih Estimasi</span><strong>${formatRp(reportData.estimatedNetCashFlow)}</strong></div>
+      <div class="metric"><span>HPP Barang Terjual</span><strong>${formatRp(reportData.costOfGoodsSold)}</strong></div>
+      <div class="metric"><span>Laba Kotor</span><strong>${formatRp(reportData.grossProfit)}</strong></div>
+      <div class="metric"><span>Laba Bersih Estimasi</span><strong>${formatRp(reportData.netProfit)}</strong></div>
+      <div class="metric"><span>Diskon Penjualan</span><strong>${formatRp(reportData.discountTotal)}</strong></div>
+      <div class="metric"><span>Pengeluaran Pembelian Stok</span><strong>${formatRp(reportData.stockPurchaseCashOut)}</strong></div>
+      <div class="metric"><span>Kerugian Barang Keluar/Opname</span><strong>${formatRp(reportData.operationalLoss)}</strong></div>
+      <div class="metric"><span>Penerimaan Tunai</span><strong>${formatRp(cashReceipts)}</strong></div>
+      <div class="metric"><span>Penerimaan Non-Tunai</span><strong>${formatRp(nonCashReceipts)}</strong></div>
+      <div class="metric"><span>Uang Tunai Diterima</span><strong>${formatRp(cashCollected)}</strong></div>
+      <div class="metric"><span>Total Kembalian</span><strong>${formatRp(cashChange)}</strong></div>
+      <div class="metric"><span>Jumlah Transaksi</span><strong>${reportData.periodTransactions.length}</strong></div>
+      <div class="metric"><span>Total Unit Terjual</span><strong>${totalUnitsSold}</strong></div></div>
+      <h2>Analisis</h2><p>Periode ini mencatat ${reportData.periodTransactions.length} transaksi dan ${totalUnitsSold} unit terjual dengan penerimaan bersih setelah diskon sebesar ${formatRp(reportData.revenue)}. Total diskon tercatat ${formatRp(reportData.discountTotal)}. Margin laba kotor ${reportData.revenue ? `${((reportData.grossProfit / reportData.revenue) * 100).toFixed(1)}%` : '0%'} dari penerimaan. Arus kas bersih estimasi memperhitungkan penerimaan penjualan dikurangi penambahan stok dan kehilangan stok. Laba bersih estimasi memperhitungkan HPP barang terjual dan kehilangan stok; pembelian stok merupakan arus kas persediaan, bukan beban laba langsung.</p>
+      <h2>Ringkasan Produk Terjual</h2><table><thead><tr><th>Produk</th><th>Qty</th><th>HPP</th><th>Penjualan Bruto</th><th>Laba Kotor</th></tr></thead><tbody>${productRows(reportData.soldList, 'Belum ada produk terjual.')}</tbody></table>
+      <h2>Produk Tidak Terjual</h2><table><thead><tr><th>Produk</th><th>Kategori</th><th>Stok Saat Ini</th></tr></thead><tbody>${unsoldRows}</tbody></table>
+      <h2>Metode Pembayaran</h2><table><thead><tr><th>Metode</th><th>Transaksi</th><th>Total</th></tr></thead><tbody>${paymentRows}</tbody></table>
+      <h2>Rincian Penjualan Per Transaksi</h2>${transactionRows}
+      <h2>Mutasi Stok Periode Ini</h2><table><thead><tr><th>Tanggal</th><th>Jenis</th><th>Produk</th><th>Selisih Qty</th><th>HPP/Unit</th><th>Nilai HPP</th><th>Petugas</th><th>Keterangan</th></tr></thead><tbody>${stockMutationRows}</tbody></table>
+      <div class="foot">Laporan lengkap berdasarkan transaksi dan mutasi dalam periode terpilih. Laba dan nilai mutasi dihitung sebagai estimasi menggunakan HPP produk yang tersimpan. Dokumen ini tidak menggunakan logo agar ruang laporan maksimal dan kolom tetap rapi.</div></body></html>`;
+
+    try {
+      if (Platform.OS === 'web') {
+        const [{ jsPDF }, { default: autoTable }] = await Promise.all([
+          import('jspdf'),
+          import('jspdf-autotable'),
+        ]);
+        const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 12;
+        let cursorY = 16;
+
+        const drawPageHeader = () => {
+          pdf.setFont('helvetica', 'normal');
+          pdf.setFontSize(7);
+          pdf.setTextColor(90, 100, 95);
+          pdf.text(`LAPORAN KEUANGAN DAN PENJUALAN | ${reportData.periodLabel}`, margin, 8);
+          pdf.text(`Halaman ${pdf.internal.getNumberOfPages()}`, pageWidth - margin, 8, { align: 'right' });
+        };
+
+        const addSection = (title) => {
+          if (cursorY > pageHeight - 20) {
+            pdf.addPage();
+            cursorY = 16;
+          }
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(10);
+          pdf.setTextColor(25, 55, 43);
+          pdf.text(title, margin, cursorY);
+          cursorY += 3;
+          pdf.setDrawColor(35, 120, 82);
+          pdf.line(margin, cursorY, pageWidth - margin, cursorY);
+          cursorY += 3;
+        };
+
+        const addTable = (head, body, options = {}) => {
+          autoTable(pdf, {
+            startY: cursorY,
+            head: [head],
+            body,
+            margin: { left: margin, right: margin, top: 14, bottom: 12 },
+            theme: 'grid',
+            styles: { font: 'helvetica', fontSize: 7, cellPadding: 2, overflow: 'linebreak', textColor: [35, 40, 38] },
+            headStyles: { fillColor: [231, 242, 235], textColor: [25, 55, 43], fontStyle: 'bold' },
+            alternateRowStyles: { fillColor: [248, 250, 248] },
+            didDrawPage: drawPageHeader,
+            ...options,
+          });
+          cursorY = pdf.lastAutoTable.finalY + 6;
+        };
+
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(17);
+        pdf.setTextColor(25, 55, 43);
+        pdf.text('LAPORAN KEUANGAN DAN PENJUALAN', margin, cursorY);
+        cursorY += 6;
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        pdf.setTextColor(75, 85, 80);
+        pdf.text(`${reportData.periodLabel} | Dicetak ${new Date().toLocaleString('id-ID')}`, margin, cursorY);
+        cursorY += 8;
+
+        addSection('RINGKASAN ARUS KAS DAN LABA');
+        const financialSummary = [
+          ['Penjualan sebelum diskon', formatRp(grossSales)],
+          ['Penerimaan setelah diskon', formatRp(reportData.revenue)],
+          ['Arus kas bersih estimasi', formatRp(reportData.estimatedNetCashFlow)],
+          ['HPP barang terjual', formatRp(reportData.costOfGoodsSold)],
+          ['Laba kotor', formatRp(reportData.grossProfit)],
+          ['Laba bersih estimasi', formatRp(reportData.netProfit)],
+          ['Total diskon', formatRp(reportData.discountTotal)],
+          ['Pembelian stok', formatRp(reportData.stockPurchaseCashOut)],
+          ['Kerugian stok', formatRp(reportData.operationalLoss)],
+          ['Penerimaan tunai', formatRp(cashReceipts)],
+          ['Penerimaan non-tunai', formatRp(nonCashReceipts)],
+          ['Uang tunai diterima', formatRp(cashCollected)],
+          ['Total kembalian', formatRp(cashChange)],
+          ['Jumlah transaksi / unit', `${reportData.periodTransactions.length} / ${totalUnitsSold}`],
+        ];
+        const financialRows = [];
+        for (let index = 0; index < financialSummary.length; index += 2) {
+          const left = financialSummary[index];
+          const right = financialSummary[index + 1] || ['', ''];
+          financialRows.push([left[0], left[1], right[0], right[1]]);
+        }
+        addTable(['Keterangan', 'Nilai', 'Keterangan', 'Nilai'], financialRows, {
+          columnStyles: { 0: { cellWidth: 58 }, 1: { cellWidth: 70 }, 2: { cellWidth: 58 }, 3: { cellWidth: 70 } },
+        });
+
+        addSection('ANALISIS');
+        const analysisText = `Periode ini mencatat ${reportData.periodTransactions.length} transaksi dan ${totalUnitsSold} unit terjual. Penjualan sebelum diskon ${formatRp(grossSales)}, diskon ${formatRp(reportData.discountTotal)}, dan penerimaan setelah diskon ${formatRp(reportData.revenue)}. Margin laba kotor ${reportData.revenue ? `${((reportData.grossProfit / reportData.revenue) * 100).toFixed(1)}%` : '0%'}. Arus kas bersih estimasi menghitung penerimaan dikurangi pembelian stok dan kerugian stok. Laba bersih estimasi menghitung penjualan dikurangi HPP barang terjual dan kerugian stok.`;
+        const analysisLines = pdf.splitTextToSize(analysisText, pageWidth - margin * 2);
+        if (cursorY + analysisLines.length * 4 > pageHeight - 12) {
+          pdf.addPage();
+          cursorY = 16;
+        }
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(8);
+        pdf.setTextColor(45, 50, 48);
+        pdf.text(analysisLines, margin, cursorY);
+        cursorY += analysisLines.length * 4 + 5;
+
+        addSection('RINGKASAN PRODUK TERJUAL');
+        addTable(
+          ['Produk', 'Qty terjual', 'HPP total', 'Penjualan bruto', 'Laba kotor'],
+          reportData.soldList.length
+            ? reportData.soldList.map((item) => [item.name, item.qty, formatRp(item.hpp), formatRp(item.total), formatRp(item.total - item.hpp)])
+            : [['Tidak ada produk terjual pada periode ini.', '', '', '', '']],
+        );
+
+        addSection(`PRODUK TIDAK TERJUAL (${reportData.unsoldProducts.length})`);
+        addTable(
+          ['Produk', 'Kategori', 'Stok saat ini'],
+          reportData.unsoldProducts.length
+            ? reportData.unsoldProducts.map((item) => [item.name, item.category || '-', item.stock])
+            : [['Semua produk memiliki penjualan.', '', '']],
+        );
+
+        addSection('RINGKASAN METODE PEMBAYARAN');
+        addTable(
+          ['Metode', 'Jumlah transaksi', 'Total penerimaan'],
+          reportData.paymentSummary.length
+            ? reportData.paymentSummary.map((item) => [item.method || 'Tidak diketahui', item.count, formatRp(item.total)])
+            : [['Belum ada transaksi.', '', '']],
+        );
+
+        addSection('RINCIAN PENJUALAN PER TRANSAKSI');
+        if (!reportData.periodTransactions.length) {
+          addTable(['Informasi'], [['Belum ada penjualan pada periode ini.']]);
+        }
+        reportData.periodTransactions.forEach((transaction) => {
+          if (cursorY > pageHeight - 38) {
+            pdf.addPage();
+            cursorY = 16;
+          }
+          const items = transaction.items || [];
+          const itemSubtotal = items.reduce((sum, item) => sum + (item.price || 0) * (item.qty || 0), 0);
+          const subtotal = transaction.subtotal ?? itemSubtotal;
+          const discount = transaction.discountAmount || 0;
+          const total = transaction.total ?? Math.max(0, subtotal - discount);
+          const received = transaction.cashAmount ?? total;
+          const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(8);
+          pdf.setTextColor(25, 55, 43);
+          pdf.text(`${transaction.id} | ${new Date(transaction.date).toLocaleString('id-ID')}`, margin, cursorY);
+          cursorY += 4;
+          pdf.setFont('helvetica', 'normal');
+          pdf.setTextColor(45, 50, 48);
+          const meta = `Kasir: ${transaction.cashier || '-'} | Pelanggan: ${customerName}${transaction.customer?.phone ? ` (${transaction.customer.phone})` : ''} | Pembayaran: ${transaction.method || '-'}`;
+          const metaLines = pdf.splitTextToSize(meta, pageWidth - margin * 2);
+          pdf.text(metaLines, margin, cursorY);
+          cursorY += metaLines.length * 3.5 + 1;
+          addTable(
+            ['Barang', 'Qty', 'Harga jual/unit', 'HPP/unit', 'Penjualan', 'HPP', 'Laba kotor'],
+            items.length
+              ? items.map((item) => {
+                const qty = item.qty || 0;
+                const sales = (item.price || 0) * qty;
+                const itemHpp = (item.hpp || 0) * qty;
+                return [item.name, qty, formatRp(item.price || 0), formatRp(item.hpp || 0), formatRp(sales), formatRp(itemHpp), formatRp(sales - itemHpp)];
+              })
+              : [['Rincian barang tidak tersedia.', '', '', '', '', '', '']],
+          );
+          const discountLabel = transaction.discountType === 'percent'
+            ? `${transaction.discountValue || 0}%`
+            : formatRp(transaction.discountValue || discount);
+          const settlementRows = [
+            ['Subtotal', formatRp(subtotal), 'Diskon', `${discountLabel} (-${formatRp(discount)})`],
+            ['Total tagihan', formatRp(total), transaction.method === 'Tunai' ? 'Uang diterima' : 'Dibayar', formatRp(received)],
+          ];
+          if (transaction.method === 'Tunai') {
+            settlementRows.push(['Kembalian', formatRp(transaction.changeAmount ?? Math.max(0, received - total)), '', '']);
+          }
+          addTable(['Keterangan', 'Nilai', 'Keterangan', 'Nilai'], settlementRows, {
+            columnStyles: { 0: { cellWidth: 45 }, 1: { cellWidth: 65 }, 2: { cellWidth: 45 }, 3: { cellWidth: 65 } },
+          });
+        });
+
+        addSection('MUTASI STOK PADA PERIODE INI');
+        addTable(
+          ['Tanggal', 'Jenis', 'Produk', 'Selisih qty', 'HPP/unit', 'Nilai HPP', 'Petugas', 'Keterangan'],
+          reportData.periodMutations.length
+            ? reportData.periodMutations.map((mutation) => {
+              const product = products.find((item) => item.id === mutation.productId);
+              const typeLabel = mutation.type === 'in' ? 'Stok masuk' : mutation.type === 'out' ? 'Stok keluar' : 'Koreksi stok';
+              const unitCost = product?.hpp || 0;
+              return [formatDateInput(mutation.date), typeLabel, product?.name || mutation.productId, `${mutation.qty > 0 ? '+' : ''}${mutation.qty}`, formatRp(unitCost), formatRp(Math.abs(mutation.qty || 0) * unitCost), mutation.operator || '-', mutation.note || '-'];
+            })
+            : [['Tidak ada mutasi stok pada periode ini.', '', '', '', '', '', '', '']],
+        );
+
+        pdf.save(`laporan-keuangan-${reportPeriod}-${formatDateInput(new Date())}.pdf`);
+        return;
+      }
+      const file = await Print.printToFileAsync({ html });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, { mimeType: 'application/pdf', dialogTitle: 'Simpan atau bagikan laporan PDF', UTI: 'com.adobe.pdf' });
+      } else {
+        Alert.alert('PDF dibuat', `Laporan tersimpan di ${file.uri}`);
+      }
+    } catch (error) {
+      console.error('Financial PDF export error:', error);
+      Alert.alert('Gagal membuat PDF', 'Coba lagi setelah memastikan perangkat dapat membuat atau membagikan file.');
+    }
+  };
+
   const cartCalculations = useMemo(() => {
     let subtotal = 0;
     cart.forEach((item) => {
@@ -1516,6 +2052,12 @@ export default function App() {
     const grandTotal = subtotal - discountAmount;
     return { subtotal, discountAmount, grandTotal };
   }, [cart, products, discountType, discountValue]);
+
+  const changeDiscountType = (type) => {
+    if (type === discountType) return;
+    setDiscountType(type);
+    setDiscountValue('0');
+  };
 
   const addToCart = (product) => {
     if (product.stock <= 0) {
@@ -1555,9 +2097,51 @@ export default function App() {
     });
   };
 
+  const handleAddCustomer = async () => {
+    const name = newCustomerName.trim();
+    if (!name) {
+      Alert.alert('Nama pelanggan wajib diisi', 'Masukkan nama pelanggan terlebih dahulu.');
+      return;
+    }
+
+    const existingCustomer = customers.find((customer) => customer.name.toLowerCase() === name.toLowerCase());
+    if (existingCustomer) {
+      setSelectedCustomer(existingCustomer);
+      setShowCustomerOptions(false);
+      setIsAddingCustomer(false);
+      setNewCustomerName('');
+      setNewCustomerPhone('');
+      return;
+    }
+
+    const customer = {
+      id: `CUS-${Date.now()}`,
+      name,
+      phone: newCustomerPhone.trim(),
+    };
+    setCustomers((previous) => [...previous, customer].sort((a, b) => a.name.localeCompare(b.name, 'id')));
+    setSelectedCustomer(customer);
+    setShowCustomerOptions(false);
+    setIsAddingCustomer(false);
+    setNewCustomerName('');
+    setNewCustomerPhone('');
+    try {
+      await fbAddCustomer(customer);
+    } catch (error) {
+      console.error('Firestore add customer error:', error);
+      Alert.alert('Pelanggan disimpan sementara', 'Data pelanggan akan tersimpan online setelah koneksi database tersedia.');
+    }
+  };
+
   const handleCheckout = async () => {
     if (cart.length === 0) {
       Alert.alert('Keranjang Kosong', 'Pilih produk terlebih dahulu.');
+      return;
+    }
+
+    const transactionDate = parseDateInput(selectedTransactionDate);
+    if (!transactionDate) {
+      Alert.alert('Tanggal tidak valid', 'Pilih atau masukkan tanggal transaksi dengan format YYYY-MM-DD.');
       return;
     }
 
@@ -1597,8 +2181,12 @@ export default function App() {
 
     const newTx = {
       id: 'TRX-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
-      date: new Date(),
+      date: transactionDate,
       cashier: currentUser.name,
+      shiftId: activeShiftId,
+      customer: selectedCustomer
+        ? { id: selectedCustomer.id, name: selectedCustomer.name, phone: selectedCustomer.phone || '' }
+        : { id: null, name: 'Pelanggan Umum', phone: '' },
       items: txItems,
       subtotal: cartCalculations.subtotal,
       discountType,
@@ -1626,6 +2214,10 @@ export default function App() {
     setCart([]);
     setDiscountValue('0');
     setCashAmount('');
+    setSelectedCustomer(null);
+    setSelectedTransactionDate(formatDateInput(new Date()));
+    setShowCustomerOptions(false);
+    setIsAddingCustomer(false);
   };
 
   const openProductForm = (product = null) => {
@@ -1753,6 +2345,7 @@ export default function App() {
       id: 'M' + Date.now(),
       date: new Date(),
       productId: mutProdId,
+      shiftId: activeShiftId,
       type: mutType,
       qty: qtyNum,
       note: mutNote || (mutType === 'in' ? 'Pembelian Restock' : 'Barang Rusak/Lost'),
@@ -1794,6 +2387,7 @@ export default function App() {
       id: 'M' + Date.now(),
       date: new Date(),
       productId: corrProdId,
+      shiftId: activeShiftId,
       type: 'koreksi',
       qty: diff,
       note: `${corrReason} (Sistem: ${prod.stock} -> Fisik: ${physQty})`,
@@ -1827,6 +2421,7 @@ export default function App() {
     };
     setUsers((prev) => [...prev, newUser]);
     setCurrentUser(newUser);
+    setActiveShiftId(`SHIFT-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
     // Write to Firestore
     try {
       await fbAddUser(newUser);
@@ -1912,7 +2507,7 @@ export default function App() {
           <TouchableOpacity style={styles.loginButton} onPress={handleLogin}>
             <Text style={styles.loginButtonText}>Masuk</Text>
           </TouchableOpacity>
-          <Text style={styles.loginHint}>Akun tersedia: windy dan renal</Text>
+          <Text style={styles.loginHint}>Akun tersedia: mei dan renal</Text>
         </View>
       </SafeAreaView>
     );
@@ -2196,22 +2791,83 @@ export default function App() {
         {activeTab === 'reports' && (
           <ScrollView style={styles.tabContent} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
             <View style={styles.reportToolbar}>
-              <Text style={styles.sectionTitle}>Laporan Transaksi</Text>
+              <Text style={styles.sectionTitle}>Laporan Keuangan</Text>
+              <View style={styles.reportPeriodRow}>
+                {[
+                  { id: 'day', label: 'Harian' },
+                  { id: 'month', label: 'Bulanan' },
+                ].map((period) => (
+                  <TouchableOpacity
+                    key={period.id}
+                    style={[styles.reportPeriodBtn, reportPeriod === period.id && styles.reportPeriodBtnActive]}
+                    onPress={() => setReportPeriod(period.id)}
+                  >
+                    <Text style={[styles.reportPeriodText, reportPeriod === period.id && styles.reportPeriodTextActive]}>{period.label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={styles.reportPeriodLabel}>{reportData.periodLabel}</Text>
               <View style={styles.reportDownloadRow}>
+                <TouchableOpacity style={[styles.reportDownloadBtn, { backgroundColor: '#047857' }]} onPress={downloadFinancialPdf}>
+                  <Feather name="file-text" size={15} color="#fff" />
+                  <Text style={styles.reportDownloadText}>Buat PDF Lengkap</Text>
+                </TouchableOpacity>
                 <TouchableOpacity style={styles.reportDownloadBtn} onPress={downloadSalesReport}>
                   <Feather name="download" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>Penjualan</Text>
+                  <Text style={styles.reportDownloadText}>CSV Penjualan</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={[styles.reportDownloadBtn, { backgroundColor: '#7c3aed' }]} onPress={downloadStockReport}>
                   <Feather name="download" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>Penambahan Stok</Text>
+                  <Text style={styles.reportDownloadText}>CSV Stok</Text>
                 </TouchableOpacity>
               </View>
             </View>
-            <Text style={styles.reportHint}>Unduh seluruh data, tidak hanya periode yang sedang dipilih.</Text>
-            <Text style={styles.sectionTitle}>Riwayat Transaksi Penjualan</Text>
+            <Text style={styles.reportHint}>PDF mengikuti periode terpilih dan berisi ringkasan keuangan, analisis produk, pembayaran, serta rincian transaksi.</Text>
 
-            {financialMetrics.filteredTx.map((tx) => (
+            <View style={styles.reportMetricGrid}>
+              {[
+                ['Penerimaan Penjualan', reportData.revenue],
+                ['Arus Kas Bersih Estimasi', reportData.estimatedNetCashFlow],
+                ['Laba Kotor', reportData.grossProfit],
+                ['Laba Bersih Estimasi', reportData.netProfit],
+                ['HPP Terjual', reportData.costOfGoodsSold],
+                ['Belanja Stok', reportData.stockPurchaseCashOut],
+              ].map(([label, value]) => (
+                <View key={label} style={styles.reportMetric}>
+                  <Text style={styles.reportMetricLabel}>{label}</Text>
+                  <Text style={styles.reportMetricValue}>{formatRp(value)}</Text>
+                </View>
+              ))}
+            </View>
+
+            <Text style={styles.sectionTitle}>Ringkasan Penjualan Produk</Text>
+            {reportData.soldList.length ? reportData.soldList.map((item) => (
+              <View key={item.id} style={styles.reportDataRow}>
+                <Text style={styles.reportDataName}>{item.name} x{item.qty}</Text>
+                <Text style={styles.reportTotal}>{formatRp(item.total)}</Text>
+              </View>
+            )) : <Text style={styles.reportEmpty}>Belum ada produk terjual pada periode ini.</Text>}
+
+            <Text style={styles.sectionTitle}>Produk Tidak Terjual ({reportData.unsoldProducts.length})</Text>
+            {reportData.unsoldProducts.slice(0, 20).map((item) => (
+              <View key={item.id} style={styles.reportDataRow}>
+                <Text style={styles.reportDataName}>{item.name}</Text>
+                <Text style={styles.reportMethod}>Stok {item.stock}</Text>
+              </View>
+            ))}
+            {reportData.unsoldProducts.length > 20 && <Text style={styles.reportEmpty}>Daftar lengkap tersedia di PDF.</Text>}
+
+            <Text style={styles.sectionTitle}>Metode Pembayaran</Text>
+            {reportData.paymentSummary.length ? reportData.paymentSummary.map((item) => (
+              <View key={item.method} style={styles.reportDataRow}>
+                <Text style={styles.reportDataName}>{item.method} ({item.count} transaksi)</Text>
+                <Text style={styles.reportTotal}>{formatRp(item.total)}</Text>
+              </View>
+            )) : <Text style={styles.reportEmpty}>Belum ada pembayaran pada periode ini.</Text>}
+
+            <Text style={styles.sectionTitle}>Rincian Transaksi</Text>
+
+            {reportData.periodTransactions.map((tx) => (
               <View key={tx.id} style={styles.reportCard}>
                 <View style={styles.reportHeader}>
                   <Text style={styles.reportTxId}>{tx.id} • {tx.cashier}</Text>
@@ -2229,6 +2885,106 @@ export default function App() {
         )}
       </View>
 
+      {/* Modal Shift Receipt */}
+      <Modal visible={isShiftReceiptOpen} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalBox, { backgroundColor: '#fff', maxHeight: '94%', maxWidth: 440, alignItems: 'center' }]}>
+            <ScrollView style={{ width: '100%' }} contentContainerStyle={{ paddingHorizontal: 4 }}>
+              <View style={{ alignItems: 'center', borderBottomWidth: 1, borderColor: '#e5e7eb', paddingBottom: 14 }}>
+                <View style={{ width: 62, height: 62, borderRadius: 13, backgroundColor: '#08090c', alignItems: 'center', justifyContent: 'center', marginBottom: 10 }}>
+                  <View style={{ position: 'absolute', width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: '#e84adc', borderRightColor: '#55e8ed' }} />
+                  <Text style={{ color: '#fff', fontSize: 9, fontWeight: '700', textAlign: 'center' }}>Tipsy{'\n'}Point</Text>
+                </View>
+                <Text style={{ color: '#27313f', fontSize: 21, fontWeight: '700' }}>Tipsy Point</Text>
+                <Text style={{ color: '#758092', marginTop: 4 }}>Jalan Kepiting</Text>
+                <Text style={{ color: '#758092', marginTop: 4 }}>Telp: 085196980785</Text>
+              </View>
+
+              <View style={{ borderBottomWidth: 1, borderColor: '#e5e7eb', paddingVertical: 10 }}>
+                {[
+                  ['No. Struk', closedShiftSummary?.shiftId],
+                  ['Tanggal', closedShiftSummary?.closedAt?.toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })],
+                  ['Kasir', closedShiftSummary?.cashier],
+                ].map(([label, value]) => (
+                  <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5, gap: 12 }}>
+                    <Text style={{ color: '#758092' }}>{label}</Text>
+                    <Text style={{ color: '#27313f', textAlign: 'right', flexShrink: 1 }}>{value}</Text>
+                  </View>
+                ))}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
+                  <Text style={{ color: '#758092' }}>Jumlah transaksi</Text>
+                  <Text style={{ color: '#27313f' }}>{closedShiftSummary?.transactions.length || 0}</Text>
+                </View>
+              </View>
+
+              <Text style={{ color: '#27313f', fontWeight: '700', marginTop: 10 }}>Barang Terjual</Text>
+              {(closedShiftSummary?.items || []).length ? closedShiftSummary.items.map((item, index) => (
+                <View key={`${item.productId || item.name}-${index}`} style={{ paddingVertical: 8 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+                    <Text style={{ color: '#27313f', fontWeight: '600', flexShrink: 1 }}>{item.name}</Text>
+                    <Text style={{ color: '#27313f', fontWeight: '600' }}>{formatRp(item.amount)}</Text>
+                  </View>
+                  <Text style={{ color: '#758092', fontSize: 12, marginTop: 4 }}>{item.qty} pcs x {formatRp(item.price)}</Text>
+                </View>
+              )) : <Text style={{ color: '#758092', paddingVertical: 8 }}>Tidak ada penjualan pada shift ini.</Text>}
+
+              <View style={{ borderTopWidth: 1, borderColor: '#e5e7eb', paddingTop: 8 }}>
+                {[
+                  ['Subtotal', formatRp(closedShiftSummary?.subtotal)],
+                  ['Diskon', `- ${formatRp(closedShiftSummary?.discount)}`],
+                ].map(([label, value]) => (
+                  <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
+                    <Text style={{ color: label === 'Diskon' ? '#d35d64' : '#758092' }}>{label}</Text>
+                    <Text style={{ color: label === 'Diskon' ? '#d35d64' : '#27313f' }}>{value}</Text>
+                  </View>
+                ))}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderColor: '#e5e7eb', paddingTop: 10, marginTop: 5 }}>
+                  <Text style={{ color: '#192230', fontSize: 16, fontWeight: '700' }}>TOTAL</Text>
+                  <Text style={{ color: '#192230', fontSize: 16, fontWeight: '700' }}>{formatRp(closedShiftSummary?.total)}</Text>
+                </View>
+              </View>
+
+              <View style={{ borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#e5e7eb', marginTop: 10, paddingVertical: 8 }}>
+                {(closedShiftSummary?.payments || []).map(({ method, amount }) => (
+                  <View key={method} style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
+                    <Text style={{ color: '#27313f' }}>{method}</Text>
+                    <Text style={{ color: '#27313f' }}>{formatRp(amount)}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <Text style={{ color: '#27313f', fontWeight: '700', marginTop: 10 }}>Barang Masuk</Text>
+              {(closedShiftSummary?.incomingStock || []).length ? closedShiftSummary.incomingStock.map((item) => (
+                <View key={item.id} style={{ paddingVertical: 7 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+                    <Text style={{ color: '#27313f', fontWeight: '600', flexShrink: 1 }}>{item.name}</Text>
+                    <Text style={{ color: '#27313f', fontWeight: '600' }}>+{item.qty} pcs</Text>
+                  </View>
+                  <Text style={{ color: '#758092', fontSize: 12, marginTop: 4 }}>
+                    {item.date ? new Date(item.date).toLocaleString('id-ID') : ''}{item.note ? ` · ${item.note}` : ''}
+                  </Text>
+                </View>
+              )) : <Text style={{ color: '#758092', paddingVertical: 8 }}>Tidak ada barang masuk pada shift ini.</Text>}
+              <Text style={{ color: '#758092', fontStyle: 'italic', textAlign: 'center', marginTop: 14, marginBottom: 8 }}>Terima kasih atas kunjungan Anda</Text>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.receiptDoneBtn, { backgroundColor: '#2563eb', marginTop: 10, marginBottom: 8 }]}
+              onPress={printShiftReceipt}
+            >
+              <Feather name="printer" size={16} color="#fff" />
+              <Text style={styles.receiptDoneBtnText}>Cetak Struk Shift</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsShiftReceiptOpen(false)}>
+              <Text style={styles.cancelBtnText}>Lanjut Shift</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.receiptDoneBtn, { marginTop: 8 }]} onPress={finishShiftAndLogout}>
+              <Text style={styles.receiptDoneBtnText}>Selesai & Keluar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Modal User Switch */}
       <Modal visible={isUserSwitchOpen} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
@@ -2241,9 +2997,9 @@ export default function App() {
             </View>
 
             <Text style={styles.currentAccountText}>Login sebagai {currentUser?.name || 'Belum login'}</Text>
-            <TouchableOpacity style={styles.logoutBtn} onPress={() => { setIsUserSwitchOpen(false); handleLogout(); }}>
+            <TouchableOpacity style={styles.logoutBtn} onPress={handleCloseShift}>
               <Feather name="log-out" size={16} color="#fff" />
-              <Text style={styles.addUserBtnText}>Keluar dari Akun</Text>
+              <Text style={styles.addUserBtnText}>Tutup Shift & Buat Struk</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -2252,7 +3008,7 @@ export default function App() {
       {/* Cart Drawer Modal */}
       <Modal visible={isCartModalOpen} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { height: '85%' }]}>
+          <View style={[styles.modalBox, { height: Math.min(windowHeight * 0.9, 760), maxHeight: '94%' }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Keranjang Belanja</Text>
               <TouchableOpacity onPress={() => setIsCartModalOpen(false)}>
@@ -2286,19 +3042,147 @@ export default function App() {
             </ScrollView>
 
             <View style={styles.cartSummary}>
+              <View style={styles.cartCustomerDateRow}>
+                <View style={styles.cartCustomerField}>
+                  <Text style={styles.cartFieldLabel}>Kasir</Text>
+                  <View style={styles.customerSelectRow}>
+                    <TouchableOpacity
+                      style={styles.customerSelectButton}
+                      onPress={() => setShowCustomerOptions((visible) => !visible)}
+                    >
+                      <Text style={styles.customerSelectText} numberOfLines={1}>{selectedCustomer?.name || 'Kasir'}</Text>
+                      <Feather name="chevron-down" size={15} color="#94a3b8" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.customerAddButton}
+                      onPress={() => {
+                        setShowCustomerOptions(true);
+                        setIsAddingCustomer((visible) => !visible);
+                      }}
+                      accessibilityLabel="Tambah Kasir baru"
+                    >
+                      <Feather name={isAddingCustomer ? 'x' : 'user-plus'} size={16} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <View style={styles.transactionDateField}>
+                  <Text style={styles.cartFieldLabel}>Tanggal Transaksi</Text>
+                  {Platform.OS === 'web' ? (
+                    <TextInput
+                      style={styles.transactionDateInput}
+                      type="date"
+                      value={selectedTransactionDate}
+                      onChangeText={setSelectedTransactionDate}
+                    />
+                  ) : (
+                    <TouchableOpacity style={styles.transactionDateButton} onPress={() => setIsDatePickerOpen(true)}>
+                      <Feather name="calendar" size={15} color="#10b981" />
+                      <Text style={styles.transactionDateText}>{selectedTransactionDate}</Text>
+                    </TouchableOpacity>
+                  )}
+                  {isDatePickerOpen && Platform.OS !== 'web' && (
+                    <DateTimePicker
+                      value={new Date(`${selectedTransactionDate}T12:00:00`)}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'compact' : 'default'}
+                      maximumDate={new Date()}
+                      onChange={(event, date) => {
+                        setIsDatePickerOpen(false);
+                        if (event.type === 'set' && date) setSelectedTransactionDate(formatDateInput(date));
+                      }}
+                    />
+                  )}
+                </View>
+              </View>
+
+              {showCustomerOptions && (
+                <View style={styles.customerOptionsPanel}>
+                  <ScrollView style={styles.customerOptionsList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    <TouchableOpacity
+                      style={styles.customerOption}
+                      onPress={() => {
+                        setSelectedCustomer(null);
+                        setShowCustomerOptions(false);
+                        setIsAddingCustomer(false);
+                      }}
+                    >
+                      <Text style={styles.customerOptionName}>Kasir</Text>
+                      <Text style={styles.customerOptionDetail}>Tanpa data Kasir</Text>
+                    </TouchableOpacity>
+                    {customers.map((customer) => (
+                      <TouchableOpacity
+                        key={customer.id}
+                        style={styles.customerOption}
+                        onPress={() => {
+                          setSelectedCustomer(customer);
+                          setShowCustomerOptions(false);
+                          setIsAddingCustomer(false);
+                        }}
+                      >
+                        <Text style={styles.customerOptionName}>{customer.name}</Text>
+                        {!!customer.phone && <Text style={styles.customerOptionDetail}>{customer.phone}</Text>}
+                      </TouchableOpacity>
+                    ))}
+                    {!customers.length && <Text style={styles.customerOptionDetail}>Belum ada kasir tersimpan.</Text>}
+                  </ScrollView>
+                  {isAddingCustomer && (
+                    <View style={styles.addCustomerForm}>
+                      <TextInput
+                        style={styles.customerInput}
+                        placeholder="Nama kasir"
+                        placeholderTextColor="#64748b"
+                        value={newCustomerName}
+                        onChangeText={setNewCustomerName}
+                        returnKeyType="next"
+                      />
+                      <TextInput
+                        style={styles.customerInput}
+                        placeholder="Nomor telepon (opsional)"
+                        placeholderTextColor="#64748b"
+                        keyboardType="phone-pad"
+                        value={newCustomerPhone}
+                        onChangeText={setNewCustomerPhone}
+                      />
+                      <TouchableOpacity style={styles.saveCustomerButton} onPress={handleAddCustomer}>
+                        <Text style={styles.saveCustomerButtonText}>Simpan & Pilih Kasir</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                </View>
+              )}
+
               <View style={styles.summaryRow}>
                 <Text style={styles.summaryLabel}>Subtotal</Text>
                 <Text style={styles.summaryVal}>{formatRp(cartCalculations.subtotal)}</Text>
               </View>
 
-              <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Diskon ({discountType === 'percent' ? '%' : 'Rp'})</Text>
+              <View style={styles.discountSection}>
+                <View style={styles.discountHeader}>
+                  <Text style={styles.summaryLabel}>Diskon</Text>
+                  <View style={styles.discountModeSwitch}>
+                    {[
+                      { id: 'percent', label: 'Persen %' },
+                      { id: 'fixed', label: 'Nominal Rp' },
+                    ].map((mode) => (
+                      <TouchableOpacity
+                        key={mode.id}
+                        style={[styles.discountModeBtn, discountType === mode.id && styles.discountModeBtnActive]}
+                        onPress={() => changeDiscountType(mode.id)}
+                      >
+                        <Text style={[styles.discountModeText, discountType === mode.id && styles.discountModeTextActive]}>{mode.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
                 <TextInput
-                  style={styles.discInput}
+                  style={styles.discountValueInput}
                   keyboardType="numeric"
+                  placeholder={discountType === 'percent' ? 'Masukkan persen diskon' : 'Masukkan nominal diskon (Rp)'}
+                  placeholderTextColor="#64748b"
                   value={discountValue}
                   onChangeText={setDiscountValue}
                 />
+                <Text style={styles.discountApplied}>Potongan: {formatRp(cartCalculations.discountAmount)}</Text>
               </View>
 
               <Text style={styles.paymentLabel}>Metode Pembayaran</Text>
@@ -2428,35 +3312,81 @@ export default function App() {
       {/* Receipt Modal */}
       <Modal visible={isReceiptModalOpen} animationType="fade" transparent>
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { alignItems: 'center' }]}>
-            <MaterialCommunityIcons name="check-circle" size={48} color="#10b981" />
-            <Text style={styles.receiptSuccessTitle}>Transaksi Berhasil!</Text>
-            <Text style={styles.receiptSub}>ID: {currentReceipt?.id} | Kasir: {currentReceipt?.cashier}</Text>
+          <View style={[styles.modalBox, { alignItems: 'center', backgroundColor: '#fff', maxHeight: '92%', maxWidth: 440 }]}>
+            <ScrollView style={{ width: '100%' }} contentContainerStyle={{ paddingHorizontal: 4 }}>
+              <View style={{ alignItems: 'center', borderBottomWidth: 1, borderColor: '#e5e7eb', paddingBottom: 14 }}>
+                <View style={{ width: 62, height: 62, borderRadius: 13, backgroundColor: '#08090c', alignItems: 'center', justifyContent: 'center', marginBottom: 10 }}>
+                  <View style={{ position: 'absolute', width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: '#e84adc', borderRightColor: '#55e8ed' }} />
+                  <Text style={{ color: '#fff', fontSize: 9, fontWeight: '700', textAlign: 'center' }}>Tipsy{'\n'}Point</Text>
+                </View>
+                <Text style={{ color: '#27313f', fontSize: 21, fontWeight: '700' }}>Tipsy Point</Text>
+                <Text style={{ color: '#758092', marginTop: 4 }}>Jalan Kepiting</Text>
+                <Text style={{ color: '#758092', marginTop: 4 }}>Telp: 085196980785</Text>
+              </View>
 
-            <View style={styles.receiptBox}>
-              {currentReceipt?.items.map((i, idx) => (
-                <View key={idx} style={styles.receiptRow}>
-                  <Text style={styles.receiptItemName}>{i.name} x{i.qty}</Text>
-                  <Text style={styles.receiptItemPrice}>{formatRp(i.price * i.qty)}</Text>
+              <View style={{ borderBottomWidth: 1, borderColor: '#e5e7eb', paddingVertical: 10 }}>
+                {[
+                  ['No. Struk', currentReceipt?.id],
+                  ['Tanggal', new Date(currentReceipt?.date || Date.now()).toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })],
+                  ['Pelanggan', currentReceipt?.customer?.name || 'Pelanggan Umum'],
+                ].map(([label, value]) => (
+                  <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5, gap: 12 }}>
+                    <Text style={{ color: '#758092' }}>{label}</Text>
+                    <Text style={{ color: '#27313f', textAlign: 'right', flexShrink: 1 }}>{value}</Text>
+                  </View>
+                ))}
+              </View>
+
+              {(currentReceipt?.items || []).map((item, index) => (
+                <View key={`${item.productId}-${index}`} style={{ paddingVertical: 8 }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 12 }}>
+                    <Text style={{ color: '#27313f', fontWeight: '600', flexShrink: 1 }}>{item.name}</Text>
+                    <Text style={{ color: '#27313f', fontWeight: '600' }}>{formatRp(item.price * item.qty)}</Text>
+                  </View>
+                  <Text style={{ color: '#758092', fontSize: 12, marginTop: 4 }}>{item.qty} pcs x {formatRp(item.price)}</Text>
                 </View>
               ))}
-              <View style={styles.receiptTotalRow}>
-                <Text style={styles.receiptTotalLabel}>TOTAL:</Text>
-                <Text style={styles.receiptTotalVal}>{formatRp(currentReceipt?.total)}</Text>
-              </View>
-              <View style={styles.receiptPaymentRow}>
-                <Text style={styles.receiptPaymentLabel}>Pembayaran:</Text>
-                <Text style={styles.receiptPaymentValue}>{currentReceipt?.method}</Text>
-              </View>
-              {currentReceipt?.method === 'Tunai' && (
-                <View style={styles.receiptPaymentRow}>
-                  <Text style={styles.receiptPaymentLabel}>Kembalian:</Text>
-                  <Text style={styles.receiptPaymentValue}>{formatRp(currentReceipt?.changeAmount)}</Text>
-                </View>
-              )}
-            </View>
 
-            <TouchableOpacity style={styles.receiptDoneBtn} onPress={() => setIsReceiptModalOpen(false)}>
+              <View style={{ borderTopWidth: 1, borderColor: '#e5e7eb', paddingTop: 8 }}>
+                {[
+                  ['Subtotal', formatRp(currentReceipt?.subtotal)],
+                  ['Diskon', `- ${formatRp(currentReceipt?.discountAmount)}`],
+                ].map(([label, value]) => (
+                  <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
+                    <Text style={{ color: label === 'Diskon' ? '#d35d64' : '#758092' }}>{label}</Text>
+                    <Text style={{ color: label === 'Diskon' ? '#d35d64' : '#27313f' }}>{value}</Text>
+                  </View>
+                ))}
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderColor: '#e5e7eb', paddingTop: 10, marginTop: 5 }}>
+                  <Text style={{ color: '#192230', fontSize: 16, fontWeight: '700' }}>TOTAL</Text>
+                  <Text style={{ color: '#192230', fontSize: 16, fontWeight: '700' }}>{formatRp(currentReceipt?.total)}</Text>
+                </View>
+              </View>
+
+              <View style={{ borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#e5e7eb', marginTop: 10, paddingVertical: 8 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
+                  <Text style={{ color: '#27313f' }}>{currentReceipt?.method}</Text>
+                  <Text style={{ color: '#27313f' }}>{formatRp(currentReceipt?.total)}</Text>
+                </View>
+                {currentReceipt?.method === 'Tunai' && <>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
+                    <Text style={{ color: '#758092' }}>Uang diterima</Text>
+                    <Text style={{ color: '#27313f' }}>{formatRp(currentReceipt?.cashAmount)}</Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
+                    <Text style={{ color: '#758092' }}>Kembalian</Text>
+                    <Text style={{ color: '#27313f' }}>{formatRp(currentReceipt?.changeAmount)}</Text>
+                  </View>
+                </>}
+              </View>
+              <Text style={{ color: '#758092', fontStyle: 'italic', textAlign: 'center', marginTop: 14, marginBottom: 8 }}>Terima kasih atas kunjungan Anda</Text>
+            </ScrollView>
+
+            <TouchableOpacity style={[styles.receiptDoneBtn, { flexDirection: 'row', gap: 8, marginTop: 10 }]} onPress={printCurrentReceipt}>
+              <Feather name="printer" size={16} color="#fff" />
+              <Text style={styles.receiptDoneBtnText}>Cetak Struk</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.receiptDoneBtn, { marginTop: 8, backgroundColor: '#27313f' }]} onPress={() => setIsReceiptModalOpen(false)}>
               <Text style={styles.receiptDoneBtnText}>Selesai & Transaksi Baru</Text>
             </TouchableOpacity>
           </View>
@@ -2683,7 +3613,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   kpiCard: {
-    width: (width - 48) / 2,
+    width: '47%',
     backgroundColor: '#1e293b',
     margin: 4,
     padding: 14,
@@ -3010,12 +3940,43 @@ const styles = StyleSheet.create({
   reportToolbar: {
     gap: 10,
   },
+  reportPeriodRow: {
+    flexDirection: 'row',
+    backgroundColor: '#1e293b',
+    borderRadius: 9,
+    padding: 3,
+  },
+  reportPeriodBtn: {
+    flex: 1,
+    height: 34,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 7,
+  },
+  reportPeriodBtnActive: {
+    backgroundColor: '#0284c7',
+  },
+  reportPeriodText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  reportPeriodTextActive: {
+    color: '#fff',
+  },
+  reportPeriodLabel: {
+    color: '#cbd5e1',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   reportDownloadRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   reportDownloadBtn: {
     flex: 1,
+    minWidth: 92,
     minHeight: 40,
     backgroundColor: '#0284c7',
     borderRadius: 9,
@@ -3034,6 +3995,54 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 11,
     marginBottom: 16,
+  },
+  reportMetricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginHorizontal: -4,
+    marginBottom: 14,
+  },
+  reportMetric: {
+    width: '48%',
+    flexGrow: 1,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 9,
+    padding: 10,
+    margin: 3,
+  },
+  reportMetricLabel: {
+    color: '#94a3b8',
+    fontSize: 10,
+  },
+  reportMetricValue: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 5,
+  },
+  reportDataRow: {
+    backgroundColor: '#1e293b',
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+    minHeight: 38,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  reportDataName: {
+    flex: 1,
+    color: '#e2e8f0',
+    fontSize: 11,
+  },
+  reportEmpty: {
+    color: '#64748b',
+    fontSize: 11,
+    paddingVertical: 8,
   },
   currentAccountText: {
     color: '#cbd5e1',
@@ -3185,6 +4194,138 @@ const styles = StyleSheet.create({
     borderColor: '#334155',
     paddingTop: 12,
   },
+  cartCustomerDateRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+  },
+  cartCustomerField: {
+    flex: 1.15,
+    minWidth: 0,
+  },
+  transactionDateField: {
+    flex: 0.85,
+    minWidth: 0,
+  },
+  cartFieldLabel: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '600',
+    marginBottom: 5,
+  },
+  customerSelectRow: {
+    flexDirection: 'row',
+    gap: 5,
+  },
+  customerSelectButton: {
+    flex: 1,
+    minWidth: 0,
+    height: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 5,
+    paddingHorizontal: 9,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
+  },
+  customerSelectText: {
+    flex: 1,
+    color: '#f8fafc',
+    fontSize: 11,
+  },
+  customerAddButton: {
+    width: 38,
+    height: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0284c7',
+    borderRadius: 8,
+  },
+  transactionDateButton: {
+    height: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: 6,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
+  },
+  transactionDateText: {
+    color: '#f8fafc',
+    fontSize: 11,
+  },
+  transactionDateInput: {
+    height: 38,
+    width: '100%',
+    color: '#f8fafc',
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    fontSize: 11,
+  },
+  customerOptionsPanel: {
+    maxHeight: 220,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 9,
+    padding: 8,
+    marginBottom: 10,
+  },
+  customerOptionsList: {
+    maxHeight: 108,
+  },
+  customerOption: {
+    minHeight: 36,
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  customerOptionName: {
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  customerOptionDetail: {
+    color: '#64748b',
+    fontSize: 10,
+    paddingVertical: 5,
+  },
+  addCustomerForm: {
+    paddingTop: 8,
+  },
+  customerInput: {
+    height: 36,
+    color: '#fff',
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 7,
+    paddingHorizontal: 9,
+    fontSize: 11,
+    marginBottom: 6,
+  },
+  saveCustomerButton: {
+    minHeight: 36,
+    backgroundColor: '#0284c7',
+    borderRadius: 7,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  saveCustomerButtonText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   summaryRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -3200,14 +4341,58 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: 'bold',
   },
-  discInput: {
+  discountSection: {
+    marginBottom: 8,
+  },
+  discountHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 7,
+  },
+  discountModeSwitch: {
+    flexDirection: 'row',
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    padding: 3,
+  },
+  discountModeBtn: {
+    minHeight: 30,
+    minWidth: 74,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  discountModeBtnActive: {
+    backgroundColor: '#0284c7',
+  },
+  discountModeText: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  discountModeTextActive: {
+    color: '#fff',
+  },
+  discountValueInput: {
     backgroundColor: '#0f172a',
     color: '#fff',
-    borderRadius: 6,
-    width: 60,
-    textAlign: 'center',
-    height: 30,
-    fontSize: 12,
+    borderRadius: 8,
+    width: '100%',
+    textAlign: 'left',
+    height: 40,
+    fontSize: 13,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  discountApplied: {
+    color: '#94a3b8',
+    fontSize: 10,
+    textAlign: 'right',
+    marginTop: 5,
   },
   paymentLabel: {
     color: '#cbd5e1',

@@ -18,18 +18,26 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f172a"
-      }
+      },
+      "package": "com.alyaem.kasirpos"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sharing"
+      "expo-sharing",
+      "@react-native-community/datetimepicker"
     ],
     "extra": {
       "eas": {
         "projectId": "df126805-e8fd-4ce5-8c72-0a8ff00b6113"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/df126805-e8fd-4ce5-8c72-0a8ff00b6113"
     }
   }
 }
