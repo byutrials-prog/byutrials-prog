@@ -3614,7 +3614,6 @@ export default function App() {
   }
 
   if (!currentUser) {
-    const kasirNames = users.map((u) => u.name).join(', ');
     return (
       <SafeAreaView style={styles.loginContainer}>
         <ExpoStatusBar style="light" />
@@ -3661,21 +3660,6 @@ export default function App() {
             <Feather name="user-plus" size={14} color="#10b981" />
             <Text style={styles.loginAddKasirText}>Tambah Akun Baru</Text>
           </TouchableOpacity>
-          {users.length > 0 ? (
-            <View style={{ marginTop: 14, padding: 10, backgroundColor: '#1e293b80', borderRadius: 8, width: '100%' }}>
-              <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700', marginBottom: 4, textAlign: 'center' }}>
-                DAFTAR AKUN:
-              </Text>
-              {users.map((u) => {
-                const isAdm = u.role?.toLowerCase() === 'super admin' || u.role?.toLowerCase() === 'admin';
-                return (
-                  <Text key={u.id || u.username} style={{ color: '#cbd5e1', fontSize: 11, textAlign: 'center', marginVertical: 1 }}>
-                    • <Text style={{ fontWeight: '700', color: '#fff' }}>{u.username}</Text> ({u.name} — <Text style={{ color: isAdm ? '#c084fc' : '#34d399', fontWeight: '600' }}>{isAdm ? 'Super Admin' : 'Kasir'}</Text>)
-                  </Text>
-                );
-              })}
-            </View>
-          ) : null}
         </View>
 
         {/* Modal Tambah Akun */}
