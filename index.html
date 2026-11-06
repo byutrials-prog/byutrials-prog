@@ -3,14 +3,15 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Tipsy Point - Sistem Kasir &amp; Manajemen Stok</title>
 
   <!-- PWA Manifest -->
   <link rel="manifest" href="/manifest.json" />
 
-  <!-- Theme Color (browser chrome) -->
-  <meta name="theme-color" content="#6366f1" />
+  <!-- Theme Color (browser chrome - selaras dengan header dark #1e293b) -->
+  <meta name="theme-color" content="#1e293b" />
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1e293b" />
   <meta name="msapplication-TileColor" content="#0f172a" />
   <meta name="msapplication-TileImage" content="/icons/icon-144x144.png" />
 
@@ -80,7 +81,7 @@
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
   <script src="https://cdn.tailwindcss.com"></script>
 
@@ -91,32 +92,118 @@
       box-sizing: border-box;
     }
 
-    body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    html {
+      height: 100%;
       width: 100%;
-      height: 100vh;
-      height: 100dvh;
-      min-height: 100vh;
-      min-height: 100dvh;
       margin: 0;
-      min-width: 320px;
+      padding: 0;
+      background-color: #0f172a;
       -webkit-text-size-adjust: 100%;
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-      padding-left: env(safe-area-inset-left);
-      padding-right: env(safe-area-inset-right);
+      overflow: hidden;
     }
 
-    body.min-h-screen {
-      min-height: 100vh;
-      min-height: 100dvh;
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      width: 100%;
+      height: 100%;
+      height: 100dvh;
+      margin: 0;
+      padding: 0 !important;
+      background-color: #0f172a;
+      overflow: hidden;
+      position: fixed;
+      inset: 0;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
     }
 
     #root {
       width: 100%;
       height: 100%;
-      min-width: 0;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
       min-height: 0;
+      min-width: 0;
+    }
+
+    /* Mencegah Safari iOS auto-zoom ketika klik/tap form input atau search */
+    input, select, textarea {
+      font-size: 16px !important;
+      -webkit-appearance: none;
+      border-radius: 8px;
+    }
+
+    /* Header menempel di atas dengan dukungan safe area (Notch / Dynamic Island) */
+    .app-header {
+      position: sticky !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      z-index: 40 !important;
+      flex-shrink: 0 !important;
+      padding-top: max(env(safe-area-inset-top, 0px), 0px) !important;
+      height: calc(56px + max(env(safe-area-inset-top, 0px), 0px)) !important;
+      background-color: #1e293b !important;
+      border-bottom: 1px solid #334155 !important;
+    }
+
+    /* MENU BAWAH: SELALU MENEMPEL (FIXED) DI BAWAH LAYAR TANPA HARUS DIGESER KE BAWAH DULU */
+    .app-bottom-nav {
+      position: fixed !important;
+      bottom: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      z-index: 50 !important;
+      flex-shrink: 0 !important;
+      height: calc(64px + max(env(safe-area-inset-bottom, 0px), 0px)) !important;
+      padding-bottom: max(env(safe-area-inset-bottom, 0px), 0px) !important;
+      background-color: #1e293b !important;
+      border-top: 1px solid #334155 !important;
+      box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.45) !important;
+    }
+
+    /* Tombol FAB Keranjang selalu melayang di atas bottom nav */
+    .app-cart-fab {
+      position: fixed !important;
+      bottom: calc(76px + max(env(safe-area-inset-bottom, 0px), 0px)) !important;
+      left: 16px !important;
+      right: 16px !important;
+      z-index: 45 !important;
+    }
+
+    /* Bottom sheet modal safe area */
+    .app-modal-box {
+      padding-bottom: calc(24px + max(env(safe-area-inset-bottom, 0px), 0px)) !important;
+    }
+
+    /* Login tabs safe area */
+    .app-login-tabs {
+      top: calc(8px + max(env(safe-area-inset-top, 0px), 0px)) !important;
+    }
+
+    .app-login-scroll {
+      padding-top: calc(76px + max(env(safe-area-inset-top, 0px), 0px)) !important;
+    }
+
+    /* Di layar tablet / desktop (iPad / Mac Safari) */
+    @media (min-width: 768px) {
+      .app-modal-overlay {
+        justify-content: center !important;
+        align-items: center !important;
+        padding: 24px !important;
+      }
+      .app-modal-box {
+        border-radius: 20px !important;
+        max-width: 520px !important;
+        width: 100% !important;
+        margin: auto !important;
+        padding-bottom: 24px !important;
+      }
     }
 
     /* Custom Scrollbar */
@@ -138,9 +225,8 @@
       background: #475569;
     }
 
-    /* iOS PWA: prevent overscroll bounce effect */
-    html, body {
-      overscroll-behavior: none;
+    /* Momentum smooth scrolling untuk Safari */
+    div, section, ul, ol {
       -webkit-overflow-scrolling: touch;
     }
 
@@ -166,10 +252,6 @@
       .app-cart-customer-date-row {
         flex-direction: column !important;
         gap: 0 !important;
-      }
-
-      .app-bottom-nav {
-        height: 60px !important;
       }
 
       .app-nav-item-text {

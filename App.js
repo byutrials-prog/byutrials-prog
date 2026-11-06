@@ -3618,11 +3618,12 @@ export default function App() {
     return (
       <SafeAreaView style={styles.loginContainer}>
         <ExpoStatusBar style="light" />
-        <View style={styles.loginCashierTabs}>{cashierTabBar}</View>
+        <View style={styles.loginCashierTabs} className={Platform.OS === 'web' ? 'app-login-tabs' : undefined}>{cashierTabBar}</View>
         <ScrollView
           contentContainerStyle={styles.loginScrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          className={Platform.OS === 'web' ? 'app-login-scroll' : undefined}
         >
         <View style={styles.loginCard}>
           <View style={styles.loginLogo}>
@@ -4006,7 +4007,11 @@ export default function App() {
 
             {/* Floating Cart Button */}
             {totalCartCount > 0 && (
-              <TouchableOpacity style={styles.cartFAB} onPress={() => setIsCartModalOpen(true)}>
+              <TouchableOpacity
+                style={styles.cartFAB}
+                className={Platform.OS === 'web' ? 'app-cart-fab' : undefined}
+                onPress={() => setIsCartModalOpen(true)}
+              >
                 <View style={styles.cartFABBadge}>
                   <Text style={styles.cartFABBadgeText}>{totalCartCount}</Text>
                 </View>
@@ -4287,8 +4292,11 @@ export default function App() {
 
       {/* Modal Shift Receipt */}
       <Modal visible={isShiftReceiptOpen} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { backgroundColor: '#fff', maxHeight: '94%', maxWidth: 440, alignItems: 'center' }]}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View
+            style={[styles.modalBox, { backgroundColor: '#fff', maxHeight: '94%', maxWidth: 440, alignItems: 'center' }]}
+            className={Platform.OS === 'web' ? 'app-modal-box' : undefined}
+          >
             <ScrollView style={{ width: '100%' }} contentContainerStyle={{ paddingHorizontal: 4 }}>
               <View ref={shiftReceiptCaptureRef} collapsable={false} style={{ backgroundColor: '#fff', paddingHorizontal: 4, width: '100%' }}>
               <View style={{ alignItems: 'center', borderBottomWidth: 1, borderColor: '#e5e7eb', paddingBottom: 14 }}>
@@ -4396,8 +4404,8 @@ export default function App() {
 
       {/* Modal User Switch */}
       <Modal visible={isUserSwitchOpen} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View style={styles.modalBox} className={Platform.OS === 'web' ? 'app-modal-box' : undefined}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Akun & Sesi</Text>
               <TouchableOpacity onPress={() => setIsUserSwitchOpen(false)}>
@@ -4548,8 +4556,8 @@ export default function App() {
 
       {/* Modal Edit Akun (Super Admin) */}
       <Modal visible={isEditUserModalOpen} transparent animationType="slide" onRequestClose={() => setIsEditUserModalOpen(false)}>
-        <View style={styles.loginModalOverlay}>
-          <View style={styles.loginModalCard}>
+        <View style={styles.loginModalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View style={styles.loginModalCard} className={Platform.OS === 'web' ? 'app-modal-box' : undefined}>
             <View style={styles.loginModalHeader}>
               <Text style={styles.loginModalTitle}>Edit Akun: {editingUser?.name}</Text>
               <TouchableOpacity onPress={() => setIsEditUserModalOpen(false)}>
@@ -4647,8 +4655,11 @@ export default function App() {
 
       {/* Cart Drawer Modal */}
       <Modal visible={isCartModalOpen} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { height: Math.min(windowHeight * 0.9, 760), maxHeight: '94%' }]}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View
+            style={[styles.modalBox, { height: Math.min(windowHeight * 0.9, 760), maxHeight: '94%' }]}
+            className={Platform.OS === 'web' ? 'app-modal-box' : undefined}
+          >
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Keranjang Belanja</Text>
               <TouchableOpacity onPress={() => setIsCartModalOpen(false)}>
@@ -4922,8 +4933,8 @@ export default function App() {
 
       {/* Modal CRUD Product */}
       <Modal visible={isProductModalOpen} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { maxHeight: '92%' }]}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View style={[styles.modalBox, { maxHeight: '92%' }]} className={Platform.OS === 'web' ? 'app-modal-box' : undefined}>
             <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.productFormContent}>
               <Text style={styles.modalTitle}>{editingProduct ? 'Edit Master Produk' : 'Tambah Produk Baru'}</Text>
 
@@ -5029,8 +5040,8 @@ export default function App() {
 
       {/* Modal Mutasi */}
       <Modal visible={isMutationModalOpen} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View style={styles.modalBox} className={Platform.OS === 'web' ? 'app-modal-box' : undefined}>
             <Text style={styles.modalTitle}>Catat Mutasi Stok</Text>
             <TextInput style={styles.modalInput} placeholder="Qty Mutasi" keyboardType="numeric" placeholderTextColor="#64748b" value={mutQty} onChangeText={setMutQty} />
             <TextInput style={styles.modalInput} placeholder="Keterangan / Alasan" placeholderTextColor="#64748b" value={mutNote} onChangeText={setMutNote} />
@@ -5049,8 +5060,8 @@ export default function App() {
 
       {/* Modal Stock Opname */}
       <Modal visible={isStockCorrectionOpen} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View style={styles.modalBox} className={Platform.OS === 'web' ? 'app-modal-box' : undefined}>
             <Text style={styles.modalTitle}>Stock Opname (Koreksi)</Text>
             <TextInput style={styles.modalInput} placeholder="Stok Fisik Sebenarnya" keyboardType="numeric" placeholderTextColor="#64748b" value={corrPhysicalStock} onChangeText={setCorrPhysicalStock} />
             <TextInput style={styles.modalInput} placeholder="Alasan Koreksi Audit" placeholderTextColor="#64748b" value={corrReason} onChangeText={setCorrReason} />
@@ -5069,8 +5080,11 @@ export default function App() {
 
       {/* Receipt Modal */}
       <Modal visible={isReceiptModalOpen} animationType="fade" transparent>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalBox, { alignItems: 'center', backgroundColor: '#fff', maxHeight: '92%', maxWidth: 440 }]}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View
+            style={[styles.modalBox, { alignItems: 'center', backgroundColor: '#fff', maxHeight: '92%', maxWidth: 440 }]}
+            className={Platform.OS === 'web' ? 'app-modal-box' : undefined}
+          >
             <ScrollView style={{ width: '100%' }} contentContainerStyle={{ paddingHorizontal: 4 }}>
               <View ref={salesReceiptCaptureRef} collapsable={false} style={{ backgroundColor: '#fff', paddingHorizontal: 4, width: '100%' }}>
               <View style={{ alignItems: 'center', borderBottomWidth: 1, borderColor: '#e5e7eb', paddingBottom: 14 }}>
@@ -5379,6 +5393,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0f172a',
     paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
+    ...(Platform.OS === 'web' ? {
+      height: '100%',
+      maxHeight: '100dvh',
+      overflow: 'hidden',
+    } : {}),
   },
   header: {
     height: 56,
@@ -5540,6 +5559,10 @@ const styles = StyleSheet.create({
   workspace: {
     flex: 1,
     minHeight: 0,
+    ...(Platform.OS === 'web' ? {
+      paddingBottom: 68,
+      overflow: 'hidden',
+    } : {}),
   },
   tabContent: {
     flex: 1,
