@@ -73,6 +73,7 @@ const getOffsetDate = (daysAgo = 0) => {
 const QRIS_IMAGE_URL = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=QRIS-DEMO-TIPSY-POINT';
 
 const DEFAULT_USERS = [
+  { id: 'U00', name: 'Super Admin', username: 'admin', password: 'admin123', role: 'Super Admin' },
   { id: 'U01', name: 'Mei', username: 'mei', password: 'admin123', role: 'Kasir' },
   { id: 'U02', name: 'Renal', username: 'renal', password: 'admin123', role: 'Kasir' },
 ];
@@ -1680,6 +1681,7 @@ export default function App() {
   const [addKasirPassword, setAddKasirPassword] = useState('');
   const [addKasirConfirm, setAddKasirConfirm] = useState('');
   const [addKasirError, setAddKasirError] = useState('');
+  const [addKasirRole, setAddKasirRole] = useState('Kasir');
 
   // Core Data — loaded from Firestore
   const [products, setProducts] = useState([]);
@@ -1689,6 +1691,14 @@ export default function App() {
   // Loading state for Firestore
   const [isLoading, setIsLoading] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState('Menghubungkan ke database...');
+
+  const isSuperAdmin = currentUser?.role?.toLowerCase() === 'super admin' || currentUser?.role?.toLowerCase() === 'superadmin' || currentUser?.role?.toLowerCase() === 'admin';
+
+  useEffect(() => {
+    if (currentUser && !isSuperAdmin && (activeTab === 'dashboard' || activeTab === 'crud' || activeTab === 'mutation')) {
+      setActiveTab('pos');
+    }
+  }, [currentUser, isSuperAdmin, activeTab]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') return undefined;
@@ -1786,11 +1796,12 @@ export default function App() {
 
         unsubUsers = subscribeToUsers((data) => {
           const usersWithCredentials = data.map((user) => {
-            const defaultUser = DEFAULT_USERS.find((item) => item.id === user.id || item.name.toLowerCase() === user.name?.toLowerCase());
+            const defaultUser = DEFAULT_USERS.find((item) => item.id === user.id || item.name.toLowerCase() === user.name?.toLowerCase() || item.username?.toLowerCase() === user.username?.toLowerCase());
             return {
               ...user,
               username: user.username || defaultUser?.username,
               password: user.password || defaultUser?.password,
+              role: user.role || defaultUser?.role || 'Kasir',
             };
           });
           setUsers(usersWithCredentials);
@@ -1844,12 +1855,13 @@ export default function App() {
     if (!password) { setAddKasirError('Sandi wajib diisi.'); return; }
     if (password.length < 6) { setAddKasirError('Sandi minimal 6 karakter.'); return; }
     if (password !== confirm) { setAddKasirError('Konfirmasi sandi tidak cocok.'); return; }
+    const role = addKasirRole || 'Kasir';
     const newKasir = {
       id: 'U' + Date.now(),
       name,
       username,
       password,
-      role: 'Kasir',
+      role,
     };
     setUsers((prev) => [...prev, newKasir]);
     try { await fbAddUser(newKasir); } catch (e) { console.error('fbAddUser error', e); }
@@ -1857,9 +1869,10 @@ export default function App() {
     setAddKasirUsername('');
     setAddKasirPassword('');
     setAddKasirConfirm('');
+    setAddKasirRole('Kasir');
     setAddKasirError('');
     setIsAddKasirLoginOpen(false);
-    Alert.alert('Kasir ditambahkan', `Akun "${name}" (${username}) berhasil dibuat. Silakan login sekarang.`);
+    Alert.alert('Akun Ditambahkan', `Akun "${name}" (${username}) dengan role "${role}" berhasil dibuat. Silakan login sekarang.`);
   };
 
   const handleLogin = () => {
@@ -3000,6 +3013,10 @@ export default function App() {
   };
 
   const saveProduct = async () => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menambah atau mengubah produk dan stok.');
+      return;
+    }
     if (!prodName.trim()) {
       Alert.alert('Validasi Error', 'Nama produk wajib diisi.');
       return;
@@ -3083,6 +3100,10 @@ export default function App() {
   };
 
   const deleteProduct = (id) => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menghapus produk.');
+      return;
+    }
     Alert.alert('Konfirmasi Hapus', 'Yakin menghapus produk ini?', [
       { text: 'Batal', style: 'cancel' },
       {
@@ -3103,6 +3124,10 @@ export default function App() {
   };
 
   const handleSaveMutation = async () => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menambah atau merubah stok.');
+      return;
+    }
     const qtyNum = parseInt(mutQty);
     if (!qtyNum || qtyNum <= 0) {
       Alert.alert('Error', 'Masukkan jumlah Qty mutasi yang valid.');
@@ -3155,6 +3180,10 @@ export default function App() {
   };
 
   const handleSaveStockCorrection = async () => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak melakukan koreksi atau opname stok.');
+      return;
+    }
     const physQty = parseInt(corrPhysicalStock);
     if (isNaN(physQty) || physQty < 0) {
       Alert.alert('Error', 'Masukkan jumlah stok fisik yang valid.');
@@ -3197,6 +3226,10 @@ export default function App() {
   };
 
   const handleAddUser = async () => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menambah pengguna.');
+      return;
+    }
     if (!newUserName.trim()) {
       Alert.alert('Error', 'Nama pengguna wajib diisi!');
       return;
@@ -3525,24 +3558,84 @@ export default function App() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.loginAddKasirBtn}
-            onPress={() => { setAddKasirError(''); setIsAddKasirLoginOpen(true); }}
+            onPress={() => { setAddKasirError(''); setAddKasirRole('Kasir'); setIsAddKasirLoginOpen(true); }}
           >
             <Feather name="user-plus" size={14} color="#10b981" />
-            <Text style={styles.loginAddKasirText}>Tambah Kasir Baru</Text>
+            <Text style={styles.loginAddKasirText}>Tambah Akun Baru</Text>
           </TouchableOpacity>
-          {kasirNames ? <Text style={styles.loginHint}>Kasir terdaftar: {kasirNames}</Text> : null}
+          {users.length > 0 ? (
+            <View style={{ marginTop: 14, padding: 10, backgroundColor: '#1e293b80', borderRadius: 8, width: '100%' }}>
+              <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700', marginBottom: 4, textAlign: 'center' }}>
+                DAFTAR AKUN:
+              </Text>
+              {users.map((u) => {
+                const isAdm = u.role?.toLowerCase() === 'super admin' || u.role?.toLowerCase() === 'admin';
+                return (
+                  <Text key={u.id || u.username} style={{ color: '#cbd5e1', fontSize: 11, textAlign: 'center', marginVertical: 1 }}>
+                    • <Text style={{ fontWeight: '700', color: '#fff' }}>{u.username}</Text> ({u.name} — <Text style={{ color: isAdm ? '#c084fc' : '#34d399', fontWeight: '600' }}>{isAdm ? 'Super Admin' : 'Kasir'}</Text>)
+                  </Text>
+                );
+              })}
+            </View>
+          ) : null}
         </View>
 
-        {/* Modal Tambah Kasir */}
+        {/* Modal Tambah Akun */}
         <Modal visible={isAddKasirLoginOpen} transparent animationType="slide" onRequestClose={() => setIsAddKasirLoginOpen(false)}>
           <View style={styles.loginModalOverlay}>
             <View style={styles.loginModalCard}>
               <View style={styles.loginModalHeader}>
-                <Text style={styles.loginModalTitle}>Tambah Kasir Baru</Text>
+                <Text style={styles.loginModalTitle}>Tambah Akun Baru</Text>
                 <TouchableOpacity onPress={() => setIsAddKasirLoginOpen(false)}>
                   <Feather name="x" size={20} color="#94a3b8" />
                 </TouchableOpacity>
               </View>
+
+              <Text style={styles.loginModalLabel}>Tipe Akun (Role)</Text>
+              <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    paddingVertical: 10,
+                    borderRadius: 8,
+                    alignItems: 'center',
+                    backgroundColor: addKasirRole === 'Kasir' ? '#10b981' : '#1e293b',
+                    borderWidth: 1,
+                    borderColor: addKasirRole === 'Kasir' ? '#10b981' : '#334155',
+                  }}
+                  onPress={() => setAddKasirRole('Kasir')}
+                >
+                  <Text style={{
+                    color: addKasirRole === 'Kasir' ? '#fff' : '#94a3b8',
+                    fontWeight: '700',
+                    fontSize: 13,
+                  }}>
+                    Kasir
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    paddingVertical: 10,
+                    borderRadius: 8,
+                    alignItems: 'center',
+                    backgroundColor: addKasirRole === 'Super Admin' ? '#7c3aed' : '#1e293b',
+                    borderWidth: 1,
+                    borderColor: addKasirRole === 'Super Admin' ? '#7c3aed' : '#334155',
+                  }}
+                  onPress={() => setAddKasirRole('Super Admin')}
+                >
+                  <Text style={{
+                    color: addKasirRole === 'Super Admin' ? '#fff' : '#94a3b8',
+                    fontWeight: '700',
+                    fontSize: 13,
+                  }}>
+                    Super Admin
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
               <Text style={styles.loginModalLabel}>Nama Lengkap</Text>
               <TextInput
                 style={styles.loginInput}
@@ -3614,13 +3707,30 @@ export default function App() {
             className={Platform.OS === 'web' ? 'app-user-badge' : undefined}
             onPress={() => setIsUserSwitchOpen(true)}
           >
-            <MaterialCommunityIcons name="account-circle" size={18} color="#10b981" />
+            <MaterialCommunityIcons name="account-circle" size={18} color={isSuperAdmin ? "#a855f7" : "#10b981"} />
             <Text
               style={styles.userBadgeText}
               className={Platform.OS === 'web' ? 'app-user-name' : undefined}
             >
               {currentUser?.name || 'Belum login'}
             </Text>
+            <View style={{
+              backgroundColor: isSuperAdmin ? '#7c3aed25' : '#10b98125',
+              paddingHorizontal: 5,
+              paddingVertical: 1,
+              borderRadius: 4,
+              borderWidth: 1,
+              borderColor: isSuperAdmin ? '#a855f7' : '#10b981',
+              marginLeft: 4,
+            }}>
+              <Text style={{
+                color: isSuperAdmin ? '#c084fc' : '#34d399',
+                fontSize: 9,
+                fontWeight: '700'
+              }}>
+                {isSuperAdmin ? 'ADMIN' : 'KASIR'}
+              </Text>
+            </View>
             <Feather name="chevron-down" size={14} color="#94a3b8" />
           </TouchableOpacity>
           <TouchableOpacity
@@ -3634,7 +3744,7 @@ export default function App() {
       </View>
       {cashierTabBar}
 
-      {activeTab === 'dashboard' && (
+      {activeTab === 'dashboard' && isSuperAdmin && (
         <View style={styles.filterBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
             {[
@@ -3659,7 +3769,7 @@ export default function App() {
 
       {/* Main Tab Workspace */}
       <View style={styles.workspace}>
-        {activeTab === 'dashboard' && (
+        {activeTab === 'dashboard' && isSuperAdmin && (
           <ScrollView style={styles.tabContent} contentContainerStyle={{ paddingBottom: CONTENT_BOTTOM_PADDING }}>
             {/* Net Profit Banner */}
             <View
@@ -3811,7 +3921,7 @@ export default function App() {
           </View>
         )}
 
-        {activeTab === 'crud' && (
+        {activeTab === 'crud' && isSuperAdmin && (
           <View style={styles.tabContent}>
             <View style={styles.crudTopRow}>
               <View style={[styles.searchBox, { flex: 1 }]}>
@@ -3862,7 +3972,7 @@ export default function App() {
           </View>
         )}
 
-        {activeTab === 'mutation' && (
+        {activeTab === 'mutation' && isSuperAdmin && (
           <View style={styles.tabContent}>
             <FlatList
               data={filteredStockHistory}
@@ -3965,7 +4075,7 @@ export default function App() {
         {activeTab === 'reports' && (
           <ScrollView style={styles.tabContent} contentContainerStyle={{ padding: 16, paddingBottom: CONTENT_BOTTOM_PADDING }}>
             <View style={styles.reportToolbar}>
-              <Text style={styles.sectionTitle}>Laporan Keuangan</Text>
+              <Text style={styles.sectionTitle}>{isSuperAdmin ? 'Laporan Keuangan' : 'Riwayat Transaksi Penjualan'}</Text>
               <View style={styles.reportPeriodRow}>
                 {[
                   { id: 'day', label: 'Harian' },
@@ -3982,14 +4092,16 @@ export default function App() {
               </View>
               <Text style={styles.reportPeriodLabel}>{reportData.periodLabel}</Text>
               <View style={styles.reportDownloadRow}>
-                <TouchableOpacity
-                  style={[styles.reportDownloadBtn, styles.reportDownloadBtnFinancial, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                  onPress={() => runPdfExport(downloadFinancialPdf)}
-                  disabled={!pdfModulesReady || pdfExporting}
-                >
-                  <Feather name="file-text" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'Buat PDF Lengkap'}</Text>
-                </TouchableOpacity>
+                {isSuperAdmin && (
+                  <TouchableOpacity
+                    style={[styles.reportDownloadBtn, styles.reportDownloadBtnFinancial, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                    onPress={() => runPdfExport(downloadFinancialPdf)}
+                    disabled={!pdfModulesReady || pdfExporting}
+                  >
+                    <Feather name="file-text" size={15} color="#fff" />
+                    <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'Buat PDF Lengkap'}</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
                   style={[styles.reportDownloadBtn, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
                   onPress={() => runPdfExport(downloadSalesReport)}
@@ -3998,34 +4110,38 @@ export default function App() {
                   <Feather name="download" size={15} color="#fff" />
                   <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Penjualan'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.reportDownloadBtn, styles.reportDownloadBtnStock, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                  onPress={() => runPdfExport(downloadStockReport)}
-                  disabled={!pdfModulesReady || pdfExporting}
-                >
-                  <Feather name="download" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Stok'}</Text>
-                </TouchableOpacity>
+                {isSuperAdmin && (
+                  <TouchableOpacity
+                    style={[styles.reportDownloadBtn, styles.reportDownloadBtnStock, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                    onPress={() => runPdfExport(downloadStockReport)}
+                    disabled={!pdfModulesReady || pdfExporting}
+                  >
+                    <Feather name="download" size={15} color="#fff" />
+                    <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Stok'}</Text>
+                  </TouchableOpacity>
+                )}
               </View>
               {!!pdfExportStatus && <Text style={styles.reportPdfStatus}>{pdfExportStatus}</Text>}
             </View>
-            <Text style={styles.reportHint}>PDF mengikuti periode terpilih dan berisi ringkasan keuangan, analisis produk, pembayaran, serta rincian transaksi.</Text>
+            <Text style={styles.reportHint}>{isSuperAdmin ? 'PDF mengikuti periode terpilih dan berisi ringkasan keuangan, analisis produk, pembayaran, serta rincian transaksi.' : 'Berikut daftar riwayat transaksi penjualan yang tercatat pada sistem.'}</Text>
 
-            <View style={styles.reportMetricGrid}>
-              {[
-                ['Penerimaan Penjualan', reportData.revenue],
-                ['Arus Kas Bersih Estimasi', reportData.estimatedNetCashFlow],
-                ['Laba Kotor', reportData.grossProfit],
-                ['Laba Bersih Estimasi', reportData.netProfit],
-                ['HPP Terjual', reportData.costOfGoodsSold],
-                ['Belanja Stok', reportData.stockPurchaseCashOut],
-              ].map(([label, value]) => (
-                <View key={label} style={styles.reportMetric}>
-                  <Text style={styles.reportMetricLabel}>{label}</Text>
-                  <Text style={styles.reportMetricValue}>{formatRp(value)}</Text>
-                </View>
-              ))}
-            </View>
+            {isSuperAdmin && (
+              <View style={styles.reportMetricGrid}>
+                {[
+                  ['Penerimaan Penjualan', reportData.revenue],
+                  ['Arus Kas Bersih Estimasi', reportData.estimatedNetCashFlow],
+                  ['Laba Kotor', reportData.grossProfit],
+                  ['Laba Bersih Estimasi', reportData.netProfit],
+                  ['HPP Terjual', reportData.costOfGoodsSold],
+                  ['Belanja Stok', reportData.stockPurchaseCashOut],
+                ].map(([label, value]) => (
+                  <View key={label} style={styles.reportMetric}>
+                    <Text style={styles.reportMetricLabel}>{label}</Text>
+                    <Text style={styles.reportMetricValue}>{formatRp(value)}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
 
             <Text style={styles.sectionTitle}>Ringkasan Penjualan Produk</Text>
             {reportData.soldList.length ? reportData.soldList.map((item) => (
@@ -4186,30 +4302,60 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Akun Kasir</Text>
-              <TouchableOpacity onPress={() => {
-                setIsUserSwitchOpen(false);
-              }}>
+              <Text style={styles.modalTitle}>Akun & Sesi</Text>
+              <TouchableOpacity onPress={() => setIsUserSwitchOpen(false)}>
                 <Feather name="x" size={20} color="#94a3b8" />
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.currentAccountText}>Login sebagai {currentUser?.name || 'Belum login'}.</Text>
+            <View style={{
+              backgroundColor: isSuperAdmin ? '#7c3aed18' : '#10b98118',
+              padding: 12,
+              borderRadius: 8,
+              borderWidth: 1,
+              borderColor: isSuperAdmin ? '#a855f750' : '#10b98150',
+              marginBottom: 12,
+            }}>
+              <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '600' }}>PENGGUNA AKTIF:</Text>
+              <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginTop: 2 }}>
+                {currentUser?.name || 'Belum login'}
+              </Text>
+              <Text style={{ color: isSuperAdmin ? '#c084fc' : '#34d399', fontSize: 12, fontWeight: '700', marginTop: 2 }}>
+                Role: {isSuperAdmin ? 'Super Admin (Akses Penuh / Kelola Stok)' : 'Kasir (Transaksi & Riwayat Saja)'}
+              </Text>
+            </View>
+
             <TouchableOpacity style={styles.logoutBtn} onPress={handleCloseShift}>
               <Feather name="log-out" size={16} color="#fff" />
               <Text style={styles.addUserBtnText}>Tutup Shift & Buat Struk</Text>
             </TouchableOpacity>
+
             <TouchableOpacity
-              style={[styles.logoutBtn, { marginTop: 10, backgroundColor: '#10b981' }]}
+              style={[styles.logoutBtn, { marginTop: 10, backgroundColor: '#ef4444' }]}
               onPress={() => {
                 setIsUserSwitchOpen(false);
-                setAddKasirError('');
-                setIsAddKasirLoginOpen(true);
+                handleLogout();
               }}
             >
-              <Feather name="user-plus" size={16} color="#fff" />
-              <Text style={styles.addUserBtnText}>Tambah Kasir Baru</Text>
+              <Feather name="power" size={16} color="#fff" />
+              <Text style={styles.addUserBtnText}>Keluar / Ganti Akun</Text>
             </TouchableOpacity>
+
+            {isSuperAdmin && (
+              <TouchableOpacity
+                style={[styles.logoutBtn, { marginTop: 10, backgroundColor: '#10b981' }]}
+                onPress={() => {
+                  setIsUserSwitchOpen(false);
+                  setAddKasirError('');
+                  setAddKasirRole('Kasir');
+                  setIsAddKasirLoginOpen(true);
+                }}
+              >
+                <Feather name="user-plus" size={16} color="#fff" />
+                <Text style={styles.addUserBtnText}>Tambah Akun Baru (Admin / Kasir)</Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity
               style={[styles.cancelBtn, { marginTop: 10 }]}
               onPress={() => setIsUserSwitchOpen(false)}
@@ -4748,13 +4894,19 @@ export default function App() {
 
       {/* Bottom Mobile Tab Bar */}
       <View style={styles.bottomNav} className={Platform.OS === 'web' ? 'app-bottom-nav' : undefined}>
-        {[
-          { id: 'pos', label: 'Kasir', icon: 'cart-outline' },
-          { id: 'dashboard', label: 'Dashboard', icon: 'view-dashboard-outline' },
-          { id: 'crud', label: 'Produk', icon: 'package-variant-closed' },
-          { id: 'mutation', label: 'Stok', icon: 'swap-horizontal' },
-          { id: 'reports', label: 'Laporan', icon: 'file-document-outline' },
-        ].map((tab) => (
+        {(isSuperAdmin
+          ? [
+              { id: 'pos', label: 'Kasir', icon: 'cart-outline' },
+              { id: 'dashboard', label: 'Dashboard', icon: 'view-dashboard-outline' },
+              { id: 'crud', label: 'Produk', icon: 'package-variant-closed' },
+              { id: 'mutation', label: 'Stok', icon: 'swap-horizontal' },
+              { id: 'reports', label: 'Laporan', icon: 'file-document-outline' },
+            ]
+          : [
+              { id: 'pos', label: 'Kasir', icon: 'cart-outline' },
+              { id: 'reports', label: 'Riwayat Transaksi', icon: 'file-document-outline' },
+            ]
+        ).map((tab) => (
           <TouchableOpacity
             key={tab.id}
             style={styles.navItem}
