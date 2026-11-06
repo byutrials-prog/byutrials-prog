@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   FlatList,
   TextInput,
+  Switch,
   Modal,
   Image,
   Alert,
@@ -18,7 +19,6 @@ import {
 import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
 import {
@@ -42,6 +42,8 @@ import {
 const formatRp = (num) => {
   return 'Rp ' + (num || 0).toLocaleString('id-ID');
 };
+
+const CONTENT_BOTTOM_PADDING = 128;
 
 const formatDateInput = (dateObj) => {
   if (!dateObj) return '';
@@ -75,7 +77,6 @@ const DEFAULT_USERS = [
   { id: 'U02', name: 'Renal', username: 'renal', password: 'admin123', role: 'Kasir' },
 ];
 
-const escapeCsvValue = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
   '&': '&amp;',
   '<': '&lt;',
@@ -83,6 +84,36 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
   '"': '&quot;',
   "'": '&#39;',
 }[character]));
+
+let webPdfModulesPromise;
+
+const loadWebPdfModules = () => {
+  if (!webPdfModulesPromise) {
+    webPdfModulesPromise = Promise.all([
+      import('jspdf'),
+      import('jspdf-autotable'),
+    ]).then(([pdfModule, tableModule]) => ({
+      jsPDF: pdfModule.jsPDF,
+      autoTable: tableModule.default,
+    })).catch((error) => {
+      webPdfModulesPromise = null;
+      throw error;
+    });
+  }
+  return webPdfModulesPromise;
+};
+
+const downloadPdfDocument = (pdf, filename) => {
+  const url = URL.createObjectURL(pdf.output('blob'));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
 
 const buildReceiptHtml = ({ receiptNumber, date, detailsHtml, itemsHtml, subtotal, discount, total, paymentsHtml, extraHtml = '', footer = 'Terima kasih atas kunjungan Anda' }) => `
   <!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
@@ -100,1057 +131,1433 @@ const buildReceiptHtml = ({ receiptNumber, date, detailsHtml, itemsHtml, subtota
     <section class="payments">${paymentsHtml}</section><section class="stock-history">${extraHtml}</section><p class="footer">${escapeHtml(footer)}</p>
   </main></body></html>`;
 
-const downloadCsv = async (filename, headers, rows) => {
-  const csv = [headers, ...rows]
-    .map((row) => row.map(escapeCsvValue).join(','))
-    .join('\n');
-
-  if (typeof document === 'undefined') {
-    try {
-      const fileUri = `${FileSystem.documentDirectory}${filename}`;
-      await FileSystem.writeAsStringAsync(fileUri, `\uFEFF${csv}`, {
-        encoding: FileSystem.EncodingType.UTF8,
-      });
-      const sharingAvailable = await Sharing.isAvailableAsync();
-      if (!sharingAvailable) {
-        Alert.alert('Laporan tersimpan', `File laporan tersedia di penyimpanan aplikasi: ${filename}`);
-        return;
-      }
-      await Sharing.shareAsync(fileUri, {
-        mimeType: 'text/csv',
-        dialogTitle: `Bagikan ${filename}`,
-        UTI: 'public.comma-separated-values-text',
-      });
-    } catch (error) {
-      console.error('Report export error:', error);
-      Alert.alert('Gagal mengunduh laporan', 'Periksa izin penyimpanan perangkat lalu coba lagi.');
-    }
+const exportTablePdf = async (filename, title, headers, rows) => {
+  if (Platform.OS === 'web') {
+    const { jsPDF, autoTable } = await loadWebPdfModules();
+    const pdf = new jsPDF({ orientation: headers.length > 6 ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' });
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(16);
+    pdf.setTextColor(25, 55, 43);
+    pdf.text(title, 12, 16);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(75, 85, 80);
+    pdf.text(`Dicetak ${new Date().toLocaleString('id-ID')}`, 12, 22);
+    autoTable(pdf, {
+      startY: 27,
+      head: [headers],
+      body: rows.length ? rows : [['Tidak ada data laporan.', ...Array(headers.length - 1).fill('')]],
+      margin: { left: 12, right: 12, top: 12, bottom: 12 },
+      theme: 'grid',
+      styles: { font: 'helvetica', fontSize: headers.length > 6 ? 7 : 8, cellPadding: 2, overflow: 'linebreak' },
+      headStyles: { fillColor: [4, 120, 87], textColor: [255, 255, 255], fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [248, 250, 248] },
+    });
+    downloadPdfDocument(pdf, filename);
     return;
   }
 
-  const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  const tableRows = rows.length
+    ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')
+    : `<tr><td colspan="${headers.length}">Tidak ada data laporan.</td></tr>`;
+  const html = `<!doctype html><html lang="id"><head><meta charset="utf-8"><style>
+    @page{size:A4 ${headers.length > 6 ? 'landscape' : 'portrait'};margin:12mm}
+    body{font-family:Arial,sans-serif;color:#1f2937;font-size:10px}
+    h1{font-size:18px;color:#19372b;margin:0 0 5px}
+    p{font-size:9px;color:#4b5563;margin:0 0 14px}
+    table{width:100%;border-collapse:collapse;table-layout:auto}
+    th,td{border:1px solid #d1d5db;padding:6px;text-align:left;overflow-wrap:anywhere}
+    th{background:#047857;color:#fff}
+    tr:nth-child(even){background:#f8faf8}
+  </style></head><body><h1>${escapeHtml(title)}</h1><p>Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</p>
+    <table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
+    </body></html>`;
+  const file = await Print.printToFileAsync({ html });
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(file.uri, { mimeType: 'application/pdf', dialogTitle: `Simpan atau bagikan ${title}`, UTI: 'com.adobe.pdf' });
+  } else {
+    Alert.alert('PDF dibuat', `Laporan tersimpan di ${file.uri}`);
+  }
 };
 
 const INITIAL_PRODUCTS = [
   {
-    "id": "P01",
-    "barcode": "89910000137",
-    "name": "ANGGUR PUTIH",
-    "category": "Anggur & Wine",
-    "hpp": 55000,
-    "price": 70000,
-    "stock": 16,
+    "stock": 2,
+    "barcode": "89910005206",
+    "price": 90000,
+    "id": "P38",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "category": "Vodka & Spirits",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+    "name": "23 VODKA 500",
+    "hpp": 70000
   },
   {
-    "id": "P02",
-    "barcode": "89910000274",
-    "name": "ANGGUR MERAH BIASA",
-    "category": "Anggur & Wine",
-    "hpp": 55000,
-    "price": 70000,
-    "stock": 17,
+    "hpp": 183000,
+    "barcode": "89910005343",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+    "category": "Vodka & Spirits",
+    "stock": 2,
+    "name": "23 VODKA 700",
+    "id": "P39",
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "price": 235000
   },
   {
-    "id": "P03",
-    "barcode": "89910000411",
-    "name": "ANGGUR MERAH SPESIAL",
-    "category": "Anggur & Wine",
-    "hpp": 59000,
-    "price": 75000,
-    "stock": 18,
+    "id": "P93",
+    "barcode": "89910000930",
+    "name": "Absolut Vodka",
+    "category": "Vodka & Spirits",
+    "hpp": 320000,
+    "price": 420000,
+    "stock": 1,
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
   },
   {
     "id": "P04",
-    "barcode": "89910000548",
-    "name": "ALEXIS",
     "category": "Anggur & Wine",
     "hpp": 62000,
+    "name": "ALEXIS",
+    "barcode": "89910000548",
+    "stock": 11,
     "price": 80000,
-    "stock": 19,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "id": "P94",
+    "barcode": "89910000940",
+    "name": "Alexis Lychee",
+    "category": "Anggur & Wine",
+    "hpp": 55000,
+    "price": 75000,
+    "stock": 7,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "stock": 11,
+    "category": "Anggur & Wine",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 70000,
+    "hpp": 55000,
+    "minStock": 5,
+    "barcode": "89910000274",
+    "name": "ANGGUR MERAH BIASA",
+    "id": "P02"
+  },
+  {
+    "id": "P03",
+    "stock": 16,
+    "category": "Anggur & Wine",
+    "hpp": 59000,
+    "barcode": "89910000411",
+    "price": 75000,
+    "isPromotion": false,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "name": "ANGGUR MERAH SPESIAL",
+    "minStock": 5,
+    "regularPrice": 75000,
+    "promotionItems": []
+  },
+  {
+    "id": "P95",
+    "barcode": "89910000950",
+    "name": "Anggur Aloy",
+    "category": "Anggur & Wine",
+    "hpp": 55000,
+    "price": 70000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "category": "Anggur & Wine",
+    "hpp": 55000,
+    "name": "ANGGUR PUTIH",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 70000,
+    "id": "P01",
+    "barcode": "89910000137",
+    "stock": 5,
+    "minStock": 5
+  },
+  {
+    "id": "P96",
+    "barcode": "89910000960",
+    "name": "Api Blackcurrant",
+    "category": "Anggur & Wine",
+    "hpp": 55000,
+    "price": 75000,
+    "stock": 8,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
   },
   {
     "id": "P05",
-    "barcode": "89910000685",
-    "name": "API HIJAU",
-    "category": "Anggur & Wine",
     "hpp": 66000,
-    "price": 85000,
-    "stock": 20,
     "minStock": 5,
+    "category": "Anggur & Wine",
+    "name": "API HIJAU",
+    "stock": 10,
+    "barcode": "89910000685",
+    "price": 85000,
     "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P06",
-    "barcode": "89910000822",
-    "name": "API PUTIH",
-    "category": "Anggur & Wine",
-    "hpp": 66000,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
     "price": 85000,
-    "stock": 21,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
+    "category": "Anggur & Wine",
+    "stock": 10,
+    "name": "API PUTIH",
+    "barcode": "89910000822",
+    "hpp": 66000,
+    "id": "P06",
+    "minStock": 5
   },
   {
+    "name": "ATLAS PEACH",
+    "price": 80000,
+    "category": "Anggur & Wine",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "id": "P08",
+    "stock": 6,
+    "hpp": 62000,
+    "minStock": 5,
+    "barcode": "89910001096"
+  },
+  {
+    "minStock": 5,
+    "stock": 7,
+    "category": "Anggur & Wine",
+    "hpp": 62000,
+    "barcode": "89910001233",
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "price": 80000,
+    "id": "P09",
+    "name": "ATLAS RAMBUTAN"
+  },
+  {
+    "id": "P97",
+    "barcode": "89910000970",
+    "name": "Atlas Rose",
+    "category": "Anggur & Wine",
+    "hpp": 60000,
+    "price": 80000,
+    "stock": 5,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "id": "P98",
+    "barcode": "89910000980",
+    "name": "Atlas Strawberry",
+    "category": "Anggur & Wine",
+    "hpp": 60000,
+    "price": 80000,
+    "stock": 10,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "stock": 9,
+    "minStock": 5,
+    "price": 80000,
+    "hpp": 62000,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
     "id": "P07",
-    "barcode": "89910000959",
     "name": "ATLAS LYCHEE",
     "category": "Anggur & Wine",
-    "hpp": 62000,
-    "price": 80000,
-    "stock": 22,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+    "barcode": "89910000959"
   },
   {
-    "id": "P08",
-    "barcode": "89910001096",
-    "name": "ATLAS PEACH",
-    "category": "Anggur & Wine",
-    "hpp": 62000,
-    "price": 80000,
-    "stock": 23,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P09",
-    "barcode": "89910001233",
-    "name": "ATLAS RAMBUTAN",
-    "category": "Anggur & Wine",
-    "hpp": 62000,
-    "price": 80000,
-    "stock": 24,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P10",
-    "barcode": "89910001370",
-    "name": "KAWA BC",
-    "category": "Anggur & Wine",
-    "hpp": 59000,
-    "price": 75000,
-    "stock": 25,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P11",
-    "barcode": "89910001507",
-    "name": "KAWA HIJAU",
-    "category": "Anggur & Wine",
-    "hpp": 66000,
-    "price": 85000,
-    "stock": 26,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P12",
-    "barcode": "89910001644",
-    "name": "KAWA MERAH",
-    "category": "Anggur & Wine",
-    "hpp": 59000,
-    "price": 75000,
-    "stock": 27,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P13",
-    "barcode": "89910001781",
-    "name": "KOLESOM",
-    "category": "Anggur & Wine",
-    "hpp": 62000,
-    "price": 80000,
-    "stock": 28,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P14",
-    "barcode": "89910001918",
-    "name": "BINTANG 620",
-    "category": "Beer & RTD",
-    "hpp": 31000,
-    "price": 40000,
-    "stock": 29,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P15",
-    "barcode": "89910002055",
-    "name": "BINTANG ARAK",
-    "category": "Beer & RTD",
-    "hpp": 35000,
-    "price": 45000,
-    "stock": 30,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P16",
-    "barcode": "89910002192",
-    "name": "BINTANG CAN 320",
-    "category": "Beer & RTD",
-    "hpp": 20000,
-    "price": 26000,
-    "stock": 31,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P17",
-    "barcode": "89910002329",
-    "name": "BINTANG REDLLER",
-    "category": "Beer & RTD",
-    "hpp": 23000,
-    "price": 30000,
-    "stock": 32,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P18",
-    "barcode": "89910002466",
-    "name": "DRAFT BEER",
-    "category": "Beer & RTD",
-    "hpp": 27000,
-    "price": 35000,
-    "stock": 33,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P19",
-    "barcode": "89910002603",
-    "name": "GUINNESS",
-    "category": "Beer & RTD",
-    "hpp": 39000,
-    "price": 50000,
-    "stock": 34,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P20",
-    "barcode": "89910002740",
-    "name": "MIX MAX",
-    "category": "Beer & RTD",
-    "hpp": 22000,
-    "price": 28000,
-    "stock": 35,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P21",
-    "barcode": "89910002877",
-    "name": "SINGARAJA",
-    "category": "Beer & RTD",
-    "hpp": 27000,
-    "price": 35000,
-    "stock": 36,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P22",
-    "barcode": "89910003014",
-    "name": "GILLBEYS GIN",
     "category": "Vodka & Spirits",
-    "hpp": 191000,
-    "price": 245000,
-    "stock": 37,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P23",
-    "barcode": "89910003151",
-    "name": "GORDON PINK",
-    "category": "Vodka & Spirits",
-    "hpp": 273000,
-    "price": 350000,
-    "stock": 38,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P24",
-    "barcode": "89910003288",
-    "name": "FRIENDSHIP BLACKTEA",
-    "category": "Vodka & Spirits",
-    "hpp": 62000,
-    "price": 80000,
-    "stock": 39,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P25",
-    "barcode": "89910003425",
-    "name": "FRIENDSHIP COFFE",
-    "category": "Vodka & Spirits",
-    "hpp": 62000,
-    "price": 80000,
-    "stock": 15,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P26",
-    "barcode": "89910003562",
-    "name": "MCD VODKA MIX",
-    "category": "Vodka & Spirits",
-    "hpp": 90000,
-    "price": 115000,
-    "stock": 16,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P27",
-    "barcode": "89910003699",
-    "name": "NEWPORT GOLDEN",
-    "category": "Vodka & Spirits",
-    "hpp": 86000,
-    "price": 110000,
-    "stock": 17,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P28",
-    "barcode": "89910003836",
-    "name": "NEWPORT MIX",
-    "category": "Vodka & Spirits",
-    "hpp": 59000,
-    "price": 75000,
-    "stock": 18,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P29",
-    "barcode": "89910003973",
-    "name": "VIBE BLACKTEA",
-    "category": "Vodka & Spirits",
-    "hpp": 250000,
-    "price": 320000,
-    "stock": 19,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P30",
-    "barcode": "89910004110",
-    "name": "VIBE LYCHEE",
-    "category": "Vodka & Spirits",
-    "hpp": 250000,
-    "price": 320000,
-    "stock": 20,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P31",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 300000,
     "barcode": "89910004247",
+    "stock": 3,
     "name": "BACARDI",
-    "category": "Vodka & Spirits",
     "hpp": 234000,
-    "price": 300000,
-    "stock": 21,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+    "id": "P31",
+    "minStock": 5
   },
   {
-    "id": "P32",
-    "barcode": "89910004384",
-    "name": "CAPTAIN MORGAN",
-    "category": "Vodka & Spirits",
-    "hpp": 234000,
-    "price": 300000,
-    "stock": 22,
+    "barcode": "89910004795",
+    "id": "P35",
+    "hpp": 59000,
+    "category": "Soju",
+    "name": "BAE SOJU ORI",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P33",
-    "barcode": "89910004521",
-    "name": "CAPTAIN MORGAN APEL",
-    "category": "Vodka & Spirits",
-    "hpp": 137000,
-    "price": 175000,
-    "stock": 23,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
+    "stock": 6,
+    "price": 75000,
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
   },
   {
     "id": "P34",
-    "barcode": "89910004658",
+    "stock": 3,
+    "hpp": 59000,
+    "minStock": 5,
+    "price": 75000,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
     "name": "BAE SOJU LYCHEE",
-    "category": "Soju",
-    "hpp": 59000,
-    "price": 75000,
-    "stock": 24,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+    "barcode": "89910004658",
+    "category": "Soju"
   },
   {
-    "id": "P35",
-    "barcode": "89910004795",
-    "name": "BAE SOJU ORI",
-    "category": "Soju",
-    "hpp": 59000,
-    "price": 75000,
-    "stock": 25,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P36",
-    "barcode": "89910004932",
-    "name": "JINRO GREENGRAPE",
-    "category": "Soju",
-    "hpp": 86000,
-    "price": 110000,
-    "stock": 26,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P37",
-    "barcode": "89910005069",
-    "name": "JINRO STRAWBERRY",
-    "category": "Soju",
-    "hpp": 86000,
-    "price": 110000,
-    "stock": 27,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P38",
-    "barcode": "89910005206",
-    "name": "23 VODKA 500",
-    "category": "Vodka & Spirits",
-    "hpp": 70000,
-    "price": 90000,
-    "stock": 28,
+    "id": "P99",
+    "barcode": "89910000990",
+    "name": "Baileys Chocolate",
+    "category": "Premium Liquors",
+    "hpp": 420000,
+    "price": 520000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P39",
-    "barcode": "89910005343",
-    "name": "23 VODKA 700",
-    "category": "Vodka & Spirits",
-    "hpp": 183000,
-    "price": 235000,
-    "stock": 29,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P40",
-    "barcode": "89910005480",
-    "name": "ICELAND 500",
-    "category": "Vodka & Spirits",
-    "hpp": 94000,
-    "price": 120000,
-    "stock": 30,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P41",
-    "barcode": "89910005617",
-    "name": "ICELAND 700",
-    "category": "Vodka & Spirits",
-    "hpp": 137000,
-    "price": 175000,
-    "stock": 31,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P42",
-    "barcode": "89910005754",
-    "name": "ICELAND BLACKTEA",
-    "category": "Vodka & Spirits",
-    "hpp": 156000,
-    "price": 200000,
-    "stock": 32,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P43",
-    "barcode": "89910005891",
-    "name": "ICELAND CITRUS",
-    "category": "Vodka & Spirits",
-    "hpp": 156000,
-    "price": 200000,
-    "stock": 33,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P44",
-    "barcode": "89910006028",
-    "name": "ICELAND LYCHEE",
-    "category": "Vodka & Spirits",
-    "hpp": 156000,
-    "price": 200000,
-    "stock": 34,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P45",
-    "barcode": "89910006165",
-    "name": "SMIRNOFF ICE ALL VARIAN",
-    "category": "Beer & RTD",
-    "hpp": 20000,
-    "price": 26000,
-    "stock": 35,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P46",
-    "barcode": "89910006302",
-    "name": "SMIRNOFF GREEN APPLE",
-    "category": "Vodka & Spirits",
-    "hpp": 234000,
-    "price": 300000,
-    "stock": 36,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P47",
-    "barcode": "89910006439",
-    "name": "SMIRNOFF VODKA",
-    "category": "Vodka & Spirits",
-    "hpp": 226000,
-    "price": 290000,
-    "stock": 37,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P48",
-    "barcode": "89910006576",
-    "name": "TOPI MIRING ORI",
-    "category": "Anggur & Wine",
-    "hpp": 82000,
-    "price": 105000,
-    "stock": 38,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P49",
-    "barcode": "89910006713",
-    "name": "TOPI MIRING LEMON",
-    "category": "Anggur & Wine",
-    "hpp": 82000,
-    "price": 105000,
-    "stock": 39,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P50",
-    "barcode": "89910006850",
-    "name": "BATAVIA",
-    "category": "Vodka & Spirits",
-    "hpp": 250000,
-    "price": 320000,
-    "stock": 15,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P51",
-    "barcode": "89910006987",
-    "name": "DRUM WHISKY 350",
-    "category": "Whisky",
-    "hpp": 70000,
-    "price": 90000,
-    "stock": 16,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P52",
-    "barcode": "89910007124",
-    "name": "DRUM WHISKY 700",
-    "category": "Whisky",
-    "hpp": 137000,
-    "price": 175000,
-    "stock": 17,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P53",
-    "barcode": "89910007261",
-    "name": "GILLBEYS WHISKY 350",
-    "category": "Whisky",
-    "hpp": 101000,
-    "price": 130000,
-    "stock": 18,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P54",
-    "barcode": "89910007398",
-    "name": "GILLBEYS WHISKY 700",
-    "category": "Whisky",
-    "hpp": 191000,
-    "price": 245000,
-    "stock": 19,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P55",
-    "barcode": "89910007535",
-    "name": "MH WHISKY",
-    "category": "Whisky",
-    "hpp": 90000,
-    "price": 115000,
-    "stock": 20,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
   },
   {
     "id": "P56",
-    "barcode": "89910007672",
     "name": "BAILEYS ORI (NC)",
     "category": "Premium Liquors",
-    "hpp": 488000,
+    "barcode": "89910007672",
     "price": 625000,
-    "stock": 21,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+    "hpp": 488000,
+    "stock": 2
   },
   {
-    "id": "P57",
     "barcode": "89910007809",
-    "name": "BAILEYS STRAWBERRY (NC)",
-    "category": "Premium Liquors",
-    "hpp": 623000,
     "price": 799000,
-    "stock": 22,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "id": "P57",
+    "name": "BAILEYS STRAWBERRY (NC)",
+    "stock": 2,
+    "minStock": 5,
+    "category": "Premium Liquors",
+    "hpp": 623000
+  },
+  {
+    "hpp": 1170000,
+    "name": "BALVENIE 12",
+    "minStock": 5,
+    "barcode": "89910007946",
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "category": "Premium Liquors",
+    "price": 1500000,
+    "id": "P58",
+    "stock": 1
+  },
+  {
+    "hpp": 1404000,
+    "name": "BALVENIE 14",
+    "minStock": 5,
+    "category": "Premium Liquors",
+    "barcode": "89910008083",
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "price": 1800000,
+    "id": "P59",
+    "stock": 1
+  },
+  {
+    "barcode": "89910006850",
+    "price": 320000,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "id": "P50",
+    "name": "BATAVIA",
+    "stock": 2,
+    "minStock": 5,
+    "category": "Vodka & Spirits",
+    "hpp": 250000
+  },
+  {
+    "id": "P100",
+    "barcode": "89910001000",
+    "name": "Bells Whisky",
+    "category": "Whisky",
+    "hpp": 200000,
+    "price": 280000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P58",
-    "barcode": "89910007946",
-    "name": "BALVENIE 12",
-    "category": "Premium Liquors",
-    "hpp": 1170000,
-    "price": 1500000,
-    "stock": 23,
+    "stock": 42,
+    "category": "Beer & RTD",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 40000,
+    "hpp": 31000,
+    "id": "P14",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+    "barcode": "89910001918",
+    "name": "BINTANG 620"
   },
   {
-    "id": "P59",
-    "barcode": "89910008083",
-    "name": "BALVENIE 14",
-    "category": "Premium Liquors",
-    "hpp": 1404000,
-    "price": 1800000,
+    "name": "BINTANG ARAK",
+    "price": 45000,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "id": "P15",
+    "minStock": 5,
+    "hpp": 35000,
+    "stock": 6,
+    "category": "Beer & RTD",
+    "barcode": "89910002055"
+  },
+  {
+    "minStock": 5,
+    "stock": 42,
+    "hpp": 20000,
+    "price": 26000,
+    "id": "P16",
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "name": "BINTANG CAN 320",
+    "category": "Beer & RTD",
+    "barcode": "89910002192"
+  },
+  {
+    "id": "P101",
+    "barcode": "89910001010",
+    "name": "Bintang Can 500ml",
+    "category": "Beer & RTD",
+    "hpp": 35000,
+    "price": 45000,
     "stock": 24,
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P60",
-    "barcode": "89910008220",
-    "name": "BLACK LABEL",
-    "category": "Whisky",
-    "hpp": 624000,
-    "price": 800000,
-    "stock": 25,
+    "barcode": "89910002329",
+    "name": "BINTANG REDLLER",
+    "price": 30000,
+    "id": "P17",
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "hpp": 23000,
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
+    "stock": 8,
+    "category": "Beer & RTD"
   },
   {
-    "id": "P61",
-    "barcode": "89910008357",
-    "name": "BLACK LABEL (NC)",
+    "stock": 2,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "price": 800000,
+    "minStock": 5,
+    "id": "P60",
     "category": "Whisky",
+    "barcode": "89910008220",
+    "hpp": 624000,
+    "name": "BLACK LABEL"
+  },
+  {
     "hpp": 671000,
-    "price": 860000,
-    "stock": 26,
+    "barcode": "89910008357",
+    "category": "Whisky",
+    "stock": 0,
+    "name": "BLACK LABEL (NC)",
+    "minStock": 5,
+    "id": "P61",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 860000
+  },
+  {
+    "hpp": 234000,
+    "category": "Vodka & Spirits",
+    "name": "CAPTAIN MORGAN",
+    "barcode": "89910004384",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 300000,
+    "minStock": 5,
+    "stock": 7,
+    "id": "P32"
+  },
+  {
+    "hpp": 663000,
+    "name": "CHIVAS REGAL 12 (NC)",
+    "minStock": 5,
+    "category": "Whisky",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 850000,
+    "id": "P62",
+    "barcode": "89910008494",
+    "stock": 1
+  },
+  {
+    "id": "P102",
+    "barcode": "89910001020",
+    "name": "Chivas Regal 18",
+    "category": "Premium Liquors",
+    "hpp": 900000,
+    "price": 1150000,
+    "stock": 0,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "id": "P103",
+    "barcode": "89910001030",
+    "name": "Chivas XV",
+    "category": "Premium Liquors",
+    "hpp": 750000,
+    "price": 950000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "hpp": 663000,
+    "barcode": "89910008631",
+    "stock": 0,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "price": 850000,
+    "category": "Whisky",
+    "name": "CHIVAS REGAL",
+    "id": "P63"
+  },
+  {
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "price": 585000,
+    "stock": 1,
+    "minStock": 5,
+    "name": "COINTRUE (NC)",
+    "barcode": "89910008768",
+    "category": "Premium Liquors",
+    "hpp": 456000,
+    "id": "P64"
+  },
+  {
+    "id": "P104",
+    "barcode": "89910001040",
+    "name": "Congyang 330ml",
+    "category": "Anggur & Wine",
+    "hpp": 35000,
+    "price": 50000,
+    "stock": 7,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P62",
-    "barcode": "89910008494",
-    "name": "CHIVAS REGAL 12 (NC)",
-    "category": "Whisky",
-    "hpp": 663000,
-    "price": 850000,
-    "stock": 27,
+    "id": "P105",
+    "barcode": "89910001050",
+    "name": "Don Julio Reposado",
+    "category": "Premium Liquors",
+    "hpp": 850000,
+    "price": 1100000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P63",
-    "barcode": "89910008631",
-    "name": "CHIVAS REGAL",
-    "category": "Whisky",
-    "hpp": 663000,
-    "price": 850000,
-    "stock": 28,
+    "category": "Beer & RTD",
+    "hpp": 27000,
+    "stock": 15,
+    "name": "DRAFT BEER",
+    "id": "P18",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "price": 35000,
+    "barcode": "89910002466"
   },
   {
-    "id": "P64",
-    "barcode": "89910008768",
-    "name": "COINTRUE (NC)",
+    "stock": 0,
+    "barcode": "89910006987",
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "category": "Whisky",
+    "price": 90000,
+    "hpp": 70000,
+    "minStock": 5,
+    "id": "P51",
+    "name": "DRUM WHISKY 350"
+  },
+  {
+    "hpp": 137000,
+    "minStock": 5,
+    "name": "DRUM WHISKY 700",
+    "id": "P52",
+    "stock": 4,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "category": "Whisky",
+    "price": 175000,
+    "barcode": "89910007124"
+  },
+  {
+    "id": "P24",
+    "stock": 6,
+    "minStock": 5,
+    "price": 80000,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "barcode": "89910003288",
+    "category": "Vodka & Spirits",
+    "name": "FRIENDSHIP BLACKTEA",
+    "hpp": 62000
+  },
+  {
+    "hpp": 62000,
+    "barcode": "89910003425",
+    "stock": 5,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 80000,
+    "id": "P25",
+    "category": "Vodka & Spirits",
+    "name": "FRIENDSHIP COFFE"
+  },
+  {
+    "category": "Vodka & Spirits",
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "price": 245000,
+    "barcode": "89910003014",
+    "stock": 2,
+    "name": "GILLBEYS GIN",
+    "hpp": 191000,
+    "id": "P22",
+    "minStock": 5
+  },
+  {
+    "barcode": "89910007398",
+    "minStock": 5,
+    "name": "GILLBEYS WHISKY 700",
+    "hpp": 191000,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "price": 245000,
+    "id": "P54",
+    "category": "Whisky",
+    "stock": 4
+  },
+  {
+    "category": "Whisky",
+    "barcode": "89910007261",
+    "name": "GILLBEYS WHISKY 350",
+    "hpp": 101000,
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "minStock": 5,
+    "price": 130000,
+    "id": "P53",
+    "stock": 3
+  },
+  {
+    "minStock": 5,
+    "name": "GLENFIDDICH 12",
+    "id": "P65",
+    "price": 1000000,
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "hpp": 780000,
+    "barcode": "89910008905",
+    "stock": 2,
+    "category": "Whisky"
+  },
+  {
+    "id": "P106",
+    "barcode": "89910001060",
+    "name": "Glenfiddich 21 Gran Reserva",
     "category": "Premium Liquors",
-    "hpp": 456000,
-    "price": 585000,
-    "stock": 29,
+    "hpp": 1800000,
+    "price": 2400000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "name": "GLENLIVET 12",
+    "minStock": 5,
+    "id": "P66",
+    "barcode": "89910009042",
+    "price": 900000,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "category": "Whisky",
+    "stock": 2,
+    "hpp": 702000
+  },
+  {
+    "id": "P107",
+    "barcode": "89910001070",
+    "name": "Gordon Dry",
+    "category": "Vodka & Spirits",
+    "hpp": 220000,
+    "price": 290000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P65",
-    "barcode": "89910008905",
-    "name": "GLENFIDDICH 12",
-    "category": "Whisky",
-    "hpp": 780000,
-    "price": 1000000,
-    "stock": 30,
+    "category": "Vodka & Spirits",
+    "name": "GORDON PINK",
+    "hpp": 273000,
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "price": 350000,
+    "id": "P23",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P66",
-    "barcode": "89910009042",
-    "name": "GLENLIVET 12",
-    "category": "Whisky",
-    "hpp": 702000,
-    "price": 900000,
-    "stock": 31,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
+    "barcode": "89910003151",
+    "stock": 2
   },
   {
     "id": "P67",
-    "barcode": "89910009179",
-    "name": "GREEYGOOSE VODKA (NC)",
-    "category": "Vodka & Spirits",
+    "stock": 1,
+    "minStock": 5,
     "hpp": 690000,
     "price": 885000,
-    "stock": 32,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "name": "GREEYGOOSE VODKA (NC)",
+    "barcode": "89910009179",
+    "category": "Vodka & Spirits"
   },
   {
+    "category": "Beer & RTD",
+    "hpp": 39000,
+    "name": "GUINNESS",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 50000,
+    "id": "P19",
+    "minStock": 5,
+    "barcode": "89910002603",
+    "stock": 15
+  },
+  {
+    "name": "HENNESY VSOP",
+    "price": 1250000,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "category": "Premium Liquors",
+    "hpp": 975000,
+    "stock": 0,
     "id": "P68",
     "barcode": "89910009316",
-    "name": "HENNESY VSOP",
-    "category": "Premium Liquors",
-    "hpp": 975000,
-    "price": 1250000,
-    "stock": 33,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+    "minStock": 5
   },
   {
-    "id": "P69",
-    "barcode": "89910009453",
     "name": "HENNESY VSOP (NC)",
+    "price": 1250000,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "id": "P69",
     "category": "Premium Liquors",
     "hpp": 975000,
-    "price": 1250000,
-    "stock": 34,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
+    "stock": 1,
+    "barcode": "89910009453",
+    "minStock": 5
   },
   {
-    "id": "P70",
-    "barcode": "89910009590",
-    "name": "JACK DANIEL",
-    "category": "Whisky",
-    "hpp": 507000,
-    "price": 650000,
-    "stock": 35,
+    "name": "ICELAND 500",
+    "id": "P40",
+    "hpp": 94000,
+    "minStock": 5,
+    "price": 120000,
+    "category": "Vodka & Spirits",
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "barcode": "89910005480",
+    "stock": 5
+  },
+  {
+    "price": 175000,
+    "barcode": "89910005617",
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "category": "Vodka & Spirits",
+    "id": "P41",
+    "name": "ICELAND 700",
+    "stock": 6,
+    "hpp": 137000,
+    "minStock": 5
+  },
+  {
+    "stock": 6,
+    "hpp": 156000,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "price": 200000,
+    "category": "Vodka & Spirits",
+    "barcode": "89910005754",
+    "name": "ICELAND BLACKTEA",
+    "id": "P42"
+  },
+  {
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "category": "Vodka & Spirits",
+    "price": 200000,
+    "hpp": 156000,
+    "name": "ICELAND CITRUS",
+    "stock": 4,
+    "barcode": "89910005891",
+    "minStock": 5,
+    "id": "P43"
+  },
+  {
+    "stock": 4,
+    "barcode": "89910006028",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 200000,
+    "category": "Vodka & Spirits",
+    "minStock": 5,
+    "hpp": 156000,
+    "name": "ICELAND LYCHEE",
+    "id": "P44"
+  },
+  {
+    "id": "P108",
+    "barcode": "89910001080",
+    "name": "Iceland Orange",
+    "category": "Vodka & Spirits",
+    "hpp": 65000,
+    "price": 85000,
+    "stock": 4,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P71",
-    "barcode": "89910009727",
-    "name": "JACK DANIEL HONEY",
+    "hpp": 507000,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "name": "JACK DANIEL",
+    "price": 650000,
+    "minStock": 5,
+    "stock": 2,
+    "barcode": "89910009590",
+    "category": "Whisky",
+    "id": "P70"
+  },
+  {
+    "stock": 2,
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "minStock": 5,
+    "price": 750000,
     "category": "Whisky",
     "hpp": 585000,
-    "price": 750000,
-    "stock": 36,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
+    "id": "P71",
+    "barcode": "89910009727",
+    "name": "JACK DANIEL HONEY"
   },
   {
-    "id": "P72",
     "barcode": "89910009864",
     "name": "JACK DANIEL (NC)",
-    "category": "Whisky",
-    "hpp": 534000,
     "price": 685000,
-    "stock": 37,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "category": "Whisky",
+    "id": "P72",
+    "hpp": 534000,
+    "stock": 0,
+    "minStock": 5
   },
   {
-    "id": "P73",
-    "barcode": "89910010001",
-    "name": "JAGERMAISTER (NC)",
     "category": "Premium Liquors",
+    "name": "JAGERMAISTER (NC)",
     "hpp": 406000,
+    "barcode": "89910010001",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
     "price": 520000,
-    "stock": 38,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+    "id": "P73",
+    "stock": 1,
+    "minStock": 5
   },
   {
-    "id": "P74",
     "barcode": "89910010138",
     "name": "JAMESON",
+    "price": 550000,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
     "category": "Whisky",
     "hpp": 429000,
+    "id": "P74",
+    "stock": 2,
+    "minStock": 5
+  },
+  {
+    "hpp": 429000,
+    "minStock": 5,
+    "category": "Whisky",
+    "stock": 3,
+    "name": "JAMESON (NC)",
+    "barcode": "89910010275",
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
     "price": 550000,
-    "stock": 39,
+    "id": "P75"
+  },
+  {
+    "name": "JIMBEAM APEL",
+    "price": 580000,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "category": "Whisky",
+    "id": "P76",
+    "hpp": 452000,
+    "stock": 1,
+    "barcode": "89910010412",
+    "minStock": 5
+  },
+  {
+    "hpp": 468000,
+    "name": "JIMBEAM APEL (NC)",
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "price": 600000,
+    "minStock": 5,
+    "stock": 1,
+    "barcode": "89910010549",
+    "id": "P77",
+    "category": "Whisky"
+  },
+  {
+    "id": "P109",
+    "barcode": "89910001090",
+    "name": "Jimbeam Blackcherry",
+    "category": "Premium Liquors",
+    "hpp": 380000,
+    "price": 480000,
+    "stock": 2,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P75",
-    "barcode": "89910010275",
-    "name": "JAMESON (NC)",
-    "category": "Whisky",
-    "hpp": 429000,
-    "price": 550000,
-    "stock": 15,
+    "id": "P110",
+    "barcode": "89910001100",
+    "name": "Jimbeam White",
+    "category": "Premium Liquors",
+    "hpp": 360000,
+    "price": 460000,
+    "stock": 1,
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P76",
-    "barcode": "89910010412",
-    "name": "JIMBEAM APEL",
-    "category": "Whisky",
-    "hpp": 452000,
-    "price": 580000,
-    "stock": 16,
+    "category": "Soju",
+    "name": "JINRO STRAWBERRY",
+    "hpp": 86000,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 110000,
+    "id": "P37",
+    "minStock": 5,
+    "barcode": "89910005069",
+    "stock": 6
+  },
+  {
+    "barcode": "89910004932",
+    "id": "P36",
+    "stock": 5,
+    "hpp": 86000,
+    "price": 110000,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "name": "JINRO GREENGRAPE",
+    "category": "Soju"
+  },
+  {
+    "category": "Vodka & Spirits",
+    "id": "P78",
+    "name": "JOSE CUERVO",
+    "price": 500000,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "barcode": "89910010686",
+    "stock": 0,
+    "minStock": 5,
+    "hpp": 390000
+  },
+  {
+    "hpp": 429000,
+    "barcode": "89910010823",
+    "minStock": 5,
+    "category": "Vodka & Spirits",
+    "stock": 2,
+    "name": "JOSE CUERVO (NC)",
+    "id": "P79",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 550000
+  },
+  {
+    "id": "P111",
+    "barcode": "89910001110",
+    "name": "Kahlua",
+    "category": "Premium Liquors",
+    "hpp": 380000,
+    "price": 480000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "stock": 10,
+    "category": "Anggur & Wine",
+    "barcode": "89910001370",
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "price": 75000,
+    "hpp": 59000,
+    "minStock": 5,
+    "name": "KAWA BC",
+    "id": "P10"
+  },
+  {
+    "hpp": 66000,
+    "minStock": 5,
+    "category": "Anggur & Wine",
+    "stock": 3,
+    "barcode": "89910001507",
+    "name": "KAWA HIJAU",
+    "id": "P11",
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "price": 85000
+  },
+  {
+    "minStock": 5,
+    "stock": 9,
+    "category": "Anggur & Wine",
+    "hpp": 59000,
+    "barcode": "89910001644",
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "price": 75000,
+    "id": "P12",
+    "name": "KAWA MERAH"
+  },
+  {
+    "stock": 0,
+    "barcode": "89910001781",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 80000,
+    "category": "Anggur & Wine",
+    "hpp": 62000,
+    "minStock": 5,
+    "id": "P13",
+    "name": "KOLESOM"
+  },
+  {
+    "id": "P112",
+    "barcode": "89910001120",
+    "name": "Lunazul Reposado",
+    "category": "Premium Liquors",
+    "hpp": 420000,
+    "price": 550000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "category": "Vodka & Spirits",
+    "name": "MCD VODKA MIX",
+    "hpp": 90000,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 115000,
+    "id": "P26",
+    "minStock": 5,
+    "barcode": "89910003562",
+    "stock": 4
+  },
+  {
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 2000000,
+    "barcode": "89910010960",
+    "stock": 1,
+    "name": "MACCALAN 12 DOUBLE CASK BLUE",
+    "hpp": 1560000,
+    "id": "P80",
+    "category": "Premium Liquors"
+  },
+  {
+    "hpp": 1638000,
+    "name": "MACCALAN 12 RED SHERRY",
+    "minStock": 5,
+    "barcode": "89910011097",
+    "id": "P81",
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "price": 2100000,
+    "category": "Premium Liquors",
+    "stock": 1
+  },
+  {
+    "id": "P113",
+    "barcode": "89910001130",
+    "name": "Malibu",
+    "category": "Vodka & Spirits",
+    "hpp": 350000,
+    "price": 450000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P77",
-    "barcode": "89910010549",
-    "name": "JIMBEAM APEL (NC)",
+    "id": "P114",
+    "barcode": "89910001140",
+    "name": "Martell Noblige",
+    "category": "Premium Liquors",
+    "hpp": 1200000,
+    "price": 1550000,
+    "stock": 0,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "hpp": 897000,
+    "name": "MARTELL VSOP",
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "price": 1150000,
+    "minStock": 5,
+    "stock": 3,
+    "barcode": "89910011234",
+    "category": "Premium Liquors",
+    "id": "P82"
+  },
+  {
+    "id": "P115",
+    "barcode": "89910001150",
+    "name": "Mcd mix 500 ml",
+    "category": "Vodka & Spirits",
+    "hpp": 30000,
+    "price": 45000,
+    "stock": 7,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+  },
+  {
     "category": "Whisky",
-    "hpp": 468000,
-    "price": 600000,
-    "stock": 17,
+    "id": "P55",
+    "hpp": 90000,
+    "barcode": "89910007535",
+    "name": "MH WHISKY",
+    "stock": 3,
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P78",
-    "barcode": "89910010686",
-    "name": "JOSE CUERVO",
-    "category": "Vodka & Spirits",
-    "hpp": 390000,
-    "price": 500000,
-    "stock": 18,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P79",
-    "barcode": "89910010823",
-    "name": "JOSE CUERVO (NC)",
-    "category": "Vodka & Spirits",
-    "hpp": 429000,
-    "price": 550000,
-    "stock": 19,
-    "minStock": 5,
+    "price": 115000,
     "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P80",
-    "barcode": "89910010960",
-    "name": "MACCALAN 12 DOUBLE CASK BLUE",
-    "category": "Premium Liquors",
-    "hpp": 1560000,
-    "price": 2000000,
-    "stock": 20,
+    "hpp": 22000,
+    "stock": 6,
+    "barcode": "89910002740",
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "category": "Beer & RTD",
+    "price": 28000,
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+    "name": "MIX MAX",
+    "id": "P20"
   },
   {
-    "id": "P81",
-    "barcode": "89910011097",
-    "name": "MACCALAN 12 RED SHERRY",
-    "category": "Premium Liquors",
-    "hpp": 1638000,
-    "price": 2100000,
-    "stock": 21,
+    "hpp": 137000,
+    "category": "Vodka & Spirits",
+    "barcode": "89910004521",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
+    "stock": 0,
+    "name": "CAPTAIN MORGAN APEL",
+    "id": "P33",
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "price": 175000
   },
   {
-    "id": "P82",
-    "barcode": "89910011234",
-    "name": "MARTELL VSOP",
-    "category": "Premium Liquors",
-    "hpp": 897000,
-    "price": 1150000,
-    "stock": 22,
+    "id": "P116",
+    "barcode": "89910001160",
+    "name": "Morgan Black",
+    "category": "Vodka & Spirits",
+    "hpp": 220000,
+    "price": 290000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P83",
+    "id": "P117",
+    "barcode": "89910001170",
+    "name": "Morgan White",
+    "category": "Vodka & Spirits",
+    "hpp": 220000,
+    "price": 290000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "barcode": "89910003836",
+    "category": "Vodka & Spirits",
+    "name": "NEWPORT MIX",
+    "id": "P28",
+    "price": 75000,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "minStock": 5,
+    "stock": 19,
+    "hpp": 59000
+  },
+  {
+    "name": "NEWPORT GOLDEN",
+    "category": "Vodka & Spirits",
+    "hpp": 86000,
+    "barcode": "89910003699",
+    "id": "P27",
+    "price": 110000,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "minStock": 5,
+    "stock": 3
+  },
+  {
     "barcode": "89910011371",
     "name": "RED LABEL",
-    "category": "Whisky",
     "hpp": 429000,
-    "price": 550000,
-    "stock": 23,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P84",
-    "barcode": "89910011508",
-    "name": "RED LABEL (NC)",
     "category": "Whisky",
-    "hpp": 452000,
-    "price": 580000,
-    "stock": 24,
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
+    "price": 550000,
+    "id": "P83",
+    "stock": 0
   },
   {
-    "id": "P85",
-    "barcode": "89910011645",
+    "category": "Whisky",
+    "id": "P84",
+    "name": "RED LABEL (NC)",
+    "price": 580000,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "barcode": "89910011508",
+    "stock": 2,
+    "minStock": 5,
+    "hpp": 452000
+  },
+  {
     "name": "SABABAY LUDISIA",
+    "price": 300000,
+    "id": "P85",
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
     "category": "Anggur & Wine",
     "hpp": 234000,
-    "price": 300000,
-    "stock": 25,
+    "stock": 1,
+    "barcode": "89910011645",
+    "minStock": 5
+  },
+  {
+    "stock": 1,
+    "id": "P86",
+    "category": "Anggur & Wine",
+    "price": 425000,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "name": "SABABAY MASCETTI",
+    "hpp": 332000,
+    "minStock": 5,
+    "barcode": "89910011782"
+  },
+  {
+    "id": "P118",
+    "barcode": "89910001180",
+    "name": "Sababay Mistelle",
+    "category": "Anggur & Wine",
+    "hpp": 250000,
+    "price": 320000,
+    "stock": 0,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P86",
-    "barcode": "89910011782",
-    "name": "SABABAY MASCETTI",
+    "stock": 0,
+    "hpp": 273000,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "price": 350000,
     "category": "Anggur & Wine",
-    "hpp": 332000,
-    "price": 425000,
-    "stock": 26,
+    "name": "SABABAY MOSCATO",
+    "barcode": "89910011919",
+    "id": "P87"
+  },
+  {
+    "stock": 1,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "price": 300000,
+    "category": "Anggur & Wine",
+    "barcode": "89910012056",
+    "hpp": 234000,
+    "id": "P88",
+    "minStock": 5,
+    "name": "SABABAY PINK BLOSSOM"
+  },
+  {
+    "id": "P119",
+    "barcode": "89910001190",
+    "name": "Santana Spiced",
+    "category": "Vodka & Spirits",
+    "hpp": 180000,
+    "price": 250000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "id": "P120",
+    "barcode": "89910001200",
+    "name": "Schweppes",
+    "category": "Beer & RTD",
+    "hpp": 10000,
+    "price": 15000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
   },
   {
-    "id": "P87",
-    "barcode": "89910011919",
-    "name": "SABABAY MOSCATO",
-    "category": "Anggur & Wine",
-    "hpp": 273000,
-    "price": 350000,
-    "stock": 27,
+    "barcode": "89910002877",
+    "stock": 14,
+    "id": "P21",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
-  },
-  {
-    "id": "P88",
-    "barcode": "89910012056",
-    "name": "SABABAY PINK BLOSSOM",
-    "category": "Anggur & Wine",
-    "hpp": 234000,
-    "price": 300000,
-    "stock": 28,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+    "price": 35000,
+    "hpp": 27000,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "name": "SINGARAJA",
+    "category": "Beer & RTD"
   },
   {
     "id": "P89",
+    "minStock": 5,
     "barcode": "89910012193",
-    "name": "SINGLETON 12 GO",
-    "category": "Whisky",
-    "hpp": 819000,
+    "stock": 1,
     "price": 1050000,
-    "stock": 29,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
+    "name": "SINGLETON 12 GO",
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "hpp": 819000,
+    "category": "Whisky"
   },
   {
-    "id": "P90",
-    "barcode": "89910012330",
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "category": "Whisky",
+    "price": 1150000,
+    "stock": 0,
     "name": "SINGLETON GO (NC)",
-    "category": "Whisky",
     "hpp": 897000,
-    "price": 1150000,
-    "stock": 30,
+    "barcode": "89910012330",
     "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
+    "id": "P90"
   },
   {
-    "id": "P91",
+    "stock": 0,
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
     "barcode": "89910012467",
-    "name": "SINGLETOK GO 12 SHERRY",
+    "price": 1150000,
+    "minStock": 5,
     "category": "Whisky",
     "hpp": 897000,
-    "price": 1150000,
-    "stock": 31,
-    "minStock": 5,
-    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
+    "name": "SINGLETOK GO 12 SHERRY",
+    "id": "P91"
   },
   {
-    "id": "P92",
-    "barcode": "89910012604",
-    "name": "SINGLETON LN 12",
-    "category": "Whisky",
-    "hpp": 702000,
-    "price": 900000,
-    "stock": 32,
+    "id": "P121",
+    "barcode": "89910001210",
+    "name": "Singleton Go 15",
+    "category": "Premium Liquors",
+    "hpp": 850000,
+    "price": 1100000,
+    "stock": 1,
     "minStock": 5,
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "minStock": 5,
+    "barcode": "89910012604",
+    "stock": 2,
+    "category": "Whisky",
+    "hpp": 702000,
+    "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80",
+    "price": 900000,
+    "id": "P92",
+    "name": "SINGLETON LN 12"
+  },
+  {
+    "id": "P122",
+    "barcode": "89910001220",
+    "name": "Siren Lychee",
+    "category": "Vodka & Spirits",
+    "hpp": 150000,
+    "price": 220000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "id": "P123",
+    "barcode": "89910001230",
+    "name": "Skyy Vodka (nc)",
+    "category": "Vodka & Spirits",
+    "hpp": 320000,
+    "price": 420000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "stock": 3,
+    "barcode": "89910006439",
+    "id": "P47",
+    "price": 290000,
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "minStock": 5,
+    "category": "Vodka & Spirits",
+    "hpp": 226000,
+    "name": "SMIRNOFF VODKA"
+  },
+  {
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80",
+    "price": 300000,
+    "stock": 2,
+    "minStock": 5,
+    "name": "SMIRNOFF GREEN APPLE",
+    "barcode": "89910006302",
+    "category": "Vodka & Spirits",
+    "hpp": 234000,
+    "id": "P46"
+  },
+  {
+    "stock": 14,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80",
+    "barcode": "89910006165",
+    "price": 26000,
+    "hpp": 20000,
+    "id": "P45",
+    "name": "SMIRNOFF ICE ALL VARIAN",
+    "category": "Beer & RTD"
+  },
+  {
+    "id": "P124",
+    "barcode": "89910001240",
+    "name": "Smirnoff Pink Lemonade",
+    "category": "Vodka & Spirits",
+    "hpp": 65000,
+    "price": 85000,
+    "stock": 2,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
+  },
+  {
+    "category": "Anggur & Wine",
+    "id": "P48",
+    "hpp": 82000,
+    "name": "TOPI MIRING ORI",
+    "stock": 4,
+    "barcode": "89910006576",
+    "price": 105000,
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "minStock": 5
+  },
+  {
+    "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80",
+    "price": 105000,
+    "stock": 4,
+    "category": "Anggur & Wine",
+    "name": "TOPI MIRING LEMON",
+    "barcode": "89910006713",
+    "id": "P49",
+    "hpp": 82000,
+    "minStock": 5
+  },
+  {
+    "category": "Vodka & Spirits",
+    "name": "VIBE BLACKTEA",
+    "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80",
+    "price": 320000,
+    "minStock": 5,
+    "hpp": 250000,
+    "stock": 3,
+    "barcode": "89910003973",
+    "id": "P29"
+  },
+  {
+    "minStock": 5,
+    "stock": 3,
+    "category": "Vodka & Spirits",
+    "hpp": 250000,
+    "id": "P30",
+    "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80",
+    "price": 320000,
+    "barcode": "89910004110",
+    "name": "VIBE LYCHEE"
+  },
+  {
+    "id": "P125",
+    "barcode": "89910001250",
+    "name": "William Lawson",
+    "category": "Whisky",
+    "hpp": 220000,
+    "price": 300000,
+    "stock": 1,
+    "minStock": 5,
+    "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
   }
 ];
 
@@ -1230,12 +1637,32 @@ const INITIAL_MUTATIONS = [
 ];
 
 export default function App() {
-  const { height: windowHeight } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const productColumns = windowWidth < 430 ? 1 : windowWidth >= 768 ? 3 : 2;
+  const shiftReceiptCaptureRef = useRef(null);
+  const salesReceiptCaptureRef = useRef(null);
   const [activeTab, setActiveTab] = useState('pos');
+  const [pdfModulesReady, setPdfModulesReady] = useState(Platform.OS !== 'web');
+  const [pdfExporting, setPdfExporting] = useState(false);
+  const [pdfExportStatus, setPdfExportStatus] = useState(Platform.OS === 'web' ? 'Menyiapkan fitur PDF...' : '');
 
   // Users & Multi-user session
   const [users, setUsers] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
+  const [cashierTabs, setCashierTabs] = useState([{
+    id: 'cashier-tab-1',
+    user: null,
+    shiftId: null,
+    cart: [],
+    selectedCustomer: null,
+    selectedTransactionDate: formatDateInput(new Date()),
+    discountType: 'percent',
+    discountValue: '0',
+    payMethod: 'Tunai',
+    cashAmount: '',
+    activeTab: 'pos',
+  }]);
+  const [activeCashierTabId, setActiveCashierTabId] = useState('cashier-tab-1');
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -1246,6 +1673,13 @@ export default function App() {
   const [newUserName, setNewUserName] = useState('');
   const [newUserRole, setNewUserRole] = useState('Kasir');
   const [isAddingUser, setIsAddingUser] = useState(false);
+  // Tambah kasir from login page
+  const [isAddKasirLoginOpen, setIsAddKasirLoginOpen] = useState(false);
+  const [addKasirName, setAddKasirName] = useState('');
+  const [addKasirUsername, setAddKasirUsername] = useState('');
+  const [addKasirPassword, setAddKasirPassword] = useState('');
+  const [addKasirConfirm, setAddKasirConfirm] = useState('');
+  const [addKasirError, setAddKasirError] = useState('');
 
   // Core Data — loaded from Firestore
   const [products, setProducts] = useState([]);
@@ -1256,18 +1690,39 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState('Menghubungkan ke database...');
 
+  useEffect(() => {
+    if (Platform.OS !== 'web') return undefined;
+    let active = true;
+    loadWebPdfModules().then(() => {
+      if (active) {
+        setPdfModulesReady(true);
+        setPdfExportStatus('');
+      }
+    }).catch((error) => {
+      console.error('PDF module preload error:', error);
+      if (active) {
+        setPdfExportStatus('Fitur PDF gagal dimuat. Muat ulang aplikasi lalu coba lagi.');
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // ==========================================
   // Firebase: Seed data & Real-time subscriptions
   // ==========================================
   useEffect(() => {
     let unsubProducts, unsubTransactions, unsubMutations, unsubUsers, unsubCustomers;
     let firebaseErrorShown = false;
+    let startupTimeout;
     let loadedFlags = { products: false, transactions: false, mutations: false, users: false, customers: false };
 
     const handleFirebaseError = (error) => {
       console.error('Firebase error:', error);
       if (firebaseErrorShown) return;
       firebaseErrorShown = true;
+      if (startupTimeout) clearTimeout(startupTimeout);
 
       setProducts(INITIAL_PRODUCTS);
       setTransactions(INITIAL_TRANSACTIONS);
@@ -1280,6 +1735,8 @@ export default function App() {
         ? 'Firestore menolak akses. Periksa Firestore Rules atau aktifkan login Firebase.'
         : error?.code === 'failed-precondition'
           ? 'Firestore belum dibuat atau konfigurasi database belum selesai di Firebase Console.'
+          : error?.code === 'startup-timeout'
+            ? 'Koneksi Firebase terlalu lama. Periksa koneksi internet, lalu muat ulang aplikasi.'
           : `Kode error: ${error?.code || 'tidak diketahui'}`;
 
       Alert.alert('Database Offline', `Gagal terhubung ke Firebase. ${detail} Data lokal sementara digunakan.`);
@@ -1287,6 +1744,7 @@ export default function App() {
 
     const checkAllLoaded = () => {
       if (loadedFlags.products && loadedFlags.transactions && loadedFlags.mutations && loadedFlags.users && loadedFlags.customers) {
+        if (startupTimeout) clearTimeout(startupTimeout);
         setIsLoading(false);
       }
     };
@@ -1354,10 +1812,15 @@ export default function App() {
       }
     };
 
+    startupTimeout = setTimeout(() => {
+      handleFirebaseError({ code: 'startup-timeout' });
+    }, 15000);
+
     initFirebase();
 
     // Cleanup subscriptions on unmount
     return () => {
+      if (startupTimeout) clearTimeout(startupTimeout);
       if (unsubProducts) unsubProducts();
       if (unsubTransactions) unsubTransactions();
       if (unsubMutations) unsubMutations();
@@ -1365,6 +1828,39 @@ export default function App() {
       if (unsubCustomers) unsubCustomers();
     };
   }, []);
+
+  const handleAddKasirFromLogin = async () => {
+    const name = addKasirName.trim();
+    const username = addKasirUsername.trim().toLowerCase();
+    const password = addKasirPassword;
+    const confirm = addKasirConfirm;
+    if (!name) { setAddKasirError('Nama wajib diisi.'); return; }
+    if (!username) { setAddKasirError('Username wajib diisi.'); return; }
+    if (username.length < 3) { setAddKasirError('Username minimal 3 karakter.'); return; }
+    if (users.some((u) => u.username?.toLowerCase() === username)) {
+      setAddKasirError('Username sudah digunakan, pilih yang lain.');
+      return;
+    }
+    if (!password) { setAddKasirError('Sandi wajib diisi.'); return; }
+    if (password.length < 6) { setAddKasirError('Sandi minimal 6 karakter.'); return; }
+    if (password !== confirm) { setAddKasirError('Konfirmasi sandi tidak cocok.'); return; }
+    const newKasir = {
+      id: 'U' + Date.now(),
+      name,
+      username,
+      password,
+      role: 'Kasir',
+    };
+    setUsers((prev) => [...prev, newKasir]);
+    try { await fbAddUser(newKasir); } catch (e) { console.error('fbAddUser error', e); }
+    setAddKasirName('');
+    setAddKasirUsername('');
+    setAddKasirPassword('');
+    setAddKasirConfirm('');
+    setAddKasirError('');
+    setIsAddKasirLoginOpen(false);
+    Alert.alert('Kasir ditambahkan', `Akun "${name}" (${username}) berhasil dibuat. Silakan login sekarang.`);
+  };
 
   const handleLogin = () => {
     const username = loginUsername.trim().toLowerCase();
@@ -1375,7 +1871,9 @@ export default function App() {
     }
 
     setCurrentUser(user);
-    setActiveShiftId(`SHIFT-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+    const activeCashierTab = cashierTabs.find((tab) => tab.id === activeCashierTabId);
+    setActiveShiftId(activeCashierTab?.shiftId || `SHIFT-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+    setActiveTab(activeCashierTab?.activeTab || 'pos');
     setLoginUsername('');
     setLoginPassword('');
     setLoginError('');
@@ -1386,6 +1884,12 @@ export default function App() {
     setActiveShiftId(null);
     setActiveTab('pos');
     setCart([]);
+    setSelectedCustomer(null);
+    setSelectedTransactionDate(formatDateInput(new Date()));
+    setDiscountType('percent');
+    setDiscountValue('0');
+    setPayMethod('Tunai');
+    setCashAmount('');
   };
 
   const handleCloseShift = () => {
@@ -1424,7 +1928,7 @@ export default function App() {
         note: mutation.note,
       })),
       subtotal: shiftTransactions.reduce((sum, transaction) => sum + (transaction.subtotal || transaction.total || 0), 0),
-      discount: shiftTransactions.reduce((sum, transaction) => sum + (transaction.discountAmount || 0), 0),
+      discount: shiftTransactions.reduce((sum, transaction) => sum + (transaction.discountAmount || 0) + (transaction.promotionDiscountAmount || 0), 0),
       payments: [...paymentTotals.entries()].map(([method, amount]) => ({ method, amount })),
       total: shiftTransactions.reduce((sum, transaction) => sum + (transaction.total || 0), 0),
       cashTotal: shiftTransactions
@@ -1484,7 +1988,15 @@ export default function App() {
   const printCurrentReceipt = async () => {
     if (!currentReceipt) return;
 
-    const itemsHtml = currentReceipt.items.map((item) => `<article class="item"><div class="item-main"><span class="item-name">${escapeHtml(item.name)}</span><span class="item-amount">${formatRp(item.price * item.qty)}</span></div><div class="item-detail">${item.qty} pcs x ${formatRp(item.price)}</div></article>`).join('');
+    const itemsHtml = currentReceipt.items.map((item) => {
+      const componentDetails = item.components?.length
+        ? `<div class="item-detail">Isi paket: ${item.components.map((component) => `${escapeHtml(component.name)} x${component.qty}`).join(' + ')}</div>`
+        : '';
+      const promoSaving = item.regularPrice > item.price
+        ? `<div class="item-detail">Hemat promo: ${formatRp((item.regularPrice - item.price) * item.qty)}</div>`
+        : '';
+      return `<article class="item"><div class="item-main"><span class="item-name">${escapeHtml(item.name)}</span><span class="item-amount">${formatRp(item.price * item.qty)}</span></div><div class="item-detail">${item.qty} pcs x ${formatRp(item.price)}</div>${componentDetails}${promoSaving}</article>`;
+    }).join('');
     const detailsHtml = `<div class="row"><span class="label">Pelanggan</span><span class="value">${escapeHtml(currentReceipt.customer?.name || 'Pelanggan Umum')}</span></div>`;
     const paymentsHtml = `<div class="row"><span>${escapeHtml(currentReceipt.method || 'Pembayaran')}</span><span class="value">${formatRp(currentReceipt.total)}</span></div>${currentReceipt.method === 'Tunai' ? `<div class="row"><span class="label">Uang diterima</span><span class="value">${formatRp(currentReceipt.cashAmount)}</span></div><div class="row"><span class="label">Kembalian</span><span class="value">${formatRp(currentReceipt.changeAmount)}</span></div>` : ''}`;
     const html = buildReceiptHtml({
@@ -1493,7 +2005,7 @@ export default function App() {
       detailsHtml,
       itemsHtml,
       subtotal: currentReceipt.subtotal,
-      discount: currentReceipt.discountAmount,
+      discount: (currentReceipt.discountAmount || 0) + (currentReceipt.promotionDiscountAmount || 0),
       total: currentReceipt.total,
       paymentsHtml,
     });
@@ -1506,26 +2018,27 @@ export default function App() {
     }
   };
 
-  const downloadSalesReport = () => {
+  const downloadSalesReport = async () => {
     const rows = transactions.flatMap((tx) => tx.items.map((item) => [
       formatDateInput(tx.date),
       tx.id,
-      tx.cashier,
+      tx.cashier || '-',
       item.name,
       item.qty,
-      item.price,
-      item.price * item.qty,
-      tx.total,
-      tx.method,
+      formatRp(item.price),
+      formatRp(item.price * item.qty),
+      formatRp(tx.total),
+      tx.method || '-',
     ]));
-    downloadCsv(
-      `laporan-penjualan-${formatDateInput(new Date())}.csv`,
+    await exportTablePdf(
+      `laporan-penjualan-${formatDateInput(new Date())}.pdf`,
+      'Laporan Penjualan',
       ['Tanggal', 'ID Transaksi', 'Kasir', 'Produk', 'Qty', 'Harga Satuan', 'Total Item', 'Total Transaksi', 'Metode Pembayaran'],
       rows,
     );
   };
 
-  const downloadStockReport = () => {
+  const downloadStockReport = async () => {
     const rows = mutations
       .filter((mutation) => mutation.type === 'in')
       .map((mutation) => {
@@ -1535,15 +2048,36 @@ export default function App() {
           mutation.id,
           product?.name || mutation.productId,
           mutation.qty,
-          mutation.operator,
-          mutation.note,
+          mutation.operator || '-',
+          mutation.note || '-',
         ];
       });
-    downloadCsv(
-      `laporan-penambahan-stok-${formatDateInput(new Date())}.csv`,
+    await exportTablePdf(
+      `laporan-penambahan-stok-${formatDateInput(new Date())}.pdf`,
+      'Laporan Penambahan Stok',
       ['Tanggal', 'ID Mutasi', 'Produk', 'Qty Ditambahkan', 'Petugas', 'Keterangan'],
       rows,
     );
+  };
+
+  const runPdfExport = async (exporter) => {
+    if (pdfExporting || !pdfModulesReady) return;
+    setPdfExporting(true);
+    setPdfExportStatus('Sedang membuat PDF...');
+    try {
+      await exporter();
+      setPdfExportStatus(Platform.OS === 'web'
+        ? 'PDF selesai dibuat. Periksa folder Unduhan browser.'
+        : 'PDF siap disimpan atau dibagikan.');
+    } catch (error) {
+      console.error('Report PDF export error:', error);
+      setPdfExportStatus('PDF gagal dibuat. Coba lagi dan periksa izin penyimpanan perangkat.');
+      if (Platform.OS !== 'web') {
+        Alert.alert('Gagal membuat PDF', 'Coba lagi setelah memastikan perangkat dapat membuat atau membagikan file.');
+      }
+    } finally {
+      setPdfExporting(false);
+    }
   };
 
   // Period Filters
@@ -1577,6 +2111,9 @@ export default function App() {
   const [prodStock, setProdStock] = useState('');
   const [prodHpp, setProdHpp] = useState('');
   const [prodPrice, setProdPrice] = useState('');
+  const [isPromotionProduct, setIsPromotionProduct] = useState(false);
+  const [promotionItems, setPromotionItems] = useState([]);
+  const [promotionSearch, setPromotionSearch] = useState('');
 
   // Mutation Modal
   const [isMutationModalOpen, setIsMutationModalOpen] = useState(false);
@@ -1584,6 +2121,7 @@ export default function App() {
   const [mutType, setMutType] = useState('in');
   const [mutQty, setMutQty] = useState('');
   const [mutNote, setMutNote] = useState('');
+  const [stockHistoryFilter, setStockHistoryFilter] = useState('all');
 
   // Stock Correction Modal
   const [isStockCorrectionOpen, setIsStockCorrectionOpen] = useState(false);
@@ -1595,8 +2133,89 @@ export default function App() {
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
   const [currentReceipt, setCurrentReceipt] = useState(null);
 
+  const saveReceiptPng = async (receiptRef, filename) => {
+    try {
+      if (!receiptRef.current) throw new Error('Receipt content is not available.');
+      if (Platform.OS === 'web') {
+        const { toPng } = await import('html-to-image');
+        const dataUrl = await toPng(receiptRef.current, {
+          backgroundColor: '#ffffff',
+          pixelRatio: 2,
+          cacheBust: true,
+        });
+        const downloadLink = document.createElement('a');
+        downloadLink.href = dataUrl;
+        downloadLink.download = filename;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        return;
+      }
+
+      const { captureRef } = await import('react-native-view-shot');
+      const imageUri = await captureRef(receiptRef, {
+        format: 'png',
+        quality: 1,
+        result: 'tmpfile',
+      });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(imageUri, {
+          mimeType: 'image/png',
+          dialogTitle: 'Simpan atau bagikan struk PNG',
+          UTI: 'public.png',
+        });
+      } else {
+        Alert.alert('PNG dibuat', `Gambar struk tersimpan sementara di ${imageUri}`);
+      }
+    } catch (error) {
+      console.error('Receipt PNG export error:', error);
+      Alert.alert('Gagal membuat PNG', 'Coba lagi setelah struk selesai dimuat.');
+    }
+  };
+
   // CRUD Search
   const [crudSearch, setCrudSearch] = useState('');
+
+  const stockHistory = useMemo(() => {
+    const mutationEntries = mutations.map((mutation) => ({
+      ...mutation,
+      source: 'mutation',
+      productName: products.find((product) => product.id === mutation.productId)?.name || mutation.productId || 'Produk tidak tersedia',
+    }));
+    const saleEntries = transactions.flatMap((transaction) =>
+      (transaction.items || [])
+        .filter((item) => item.qty > 0)
+        .map((item, index) => ({
+          id: `sale-${transaction.id}-${index}`,
+          date: transaction.date,
+          productId: item.productId,
+          productName: item.name || products.find((product) => product.id === item.productId)?.name || item.productId || 'Produk tidak tersedia',
+          type: 'out',
+          qty: item.qty,
+          note: `Penjualan · ${transaction.id}`,
+          operator: transaction.cashier || 'Kasir',
+          source: 'sale',
+        })),
+    );
+    return [...mutationEntries, ...saleEntries].sort(
+      (a, b) => new Date(b.date || 0) - new Date(a.date || 0),
+    );
+  }, [mutations, products, transactions]);
+
+  const stockHistoryTotals = useMemo(() => ({
+    restocked: stockHistory
+      .filter((entry) => entry.type === 'in')
+      .reduce((total, entry) => total + Math.abs(Number(entry.qty) || 0), 0),
+    removed: stockHistory
+      .filter((entry) => entry.type === 'out')
+      .reduce((total, entry) => total + Math.abs(Number(entry.qty) || 0), 0),
+  }), [stockHistory]);
+
+  const filteredStockHistory = useMemo(() => (
+    stockHistoryFilter === 'all'
+      ? stockHistory
+      : stockHistory.filter((entry) => entry.type === stockHistoryFilter)
+  ), [stockHistory, stockHistoryFilter]);
 
   const financialMetrics = useMemo(() => {
     const todayStr = formatDateInput(new Date());
@@ -1639,7 +2258,7 @@ export default function App() {
 
     filteredTx.forEach((t) => {
       omzet += t.total;
-      totalDiscountGiven += t.discountAmount || 0;
+      totalDiscountGiven += (t.discountAmount || 0) + (t.promotionDiscountAmount || 0);
       t.items.forEach((i) => {
         totalHpp += i.hpp * i.qty;
       });
@@ -1692,7 +2311,7 @@ export default function App() {
     let discountTotal = 0;
     periodTransactions.forEach((transaction) => {
       revenue += transaction.total || 0;
-      discountTotal += transaction.discountAmount || 0;
+      discountTotal += (transaction.discountAmount || 0) + (transaction.promotionDiscountAmount || 0);
       const payment = paymentSummary.get(transaction.method) || { count: 0, total: 0 };
       payment.count += 1;
       payment.total += transaction.total || 0;
@@ -1704,9 +2323,11 @@ export default function App() {
           qty: 0,
           total: 0,
           hpp: 0,
+          promotionDiscount: 0,
         };
         sold.qty += item.qty || 0;
         sold.total += (item.price || 0) * (item.qty || 0);
+        sold.promotionDiscount += Math.max(0, (item.regularPrice || item.price || 0) - (item.price || 0)) * (item.qty || 0);
         sold.hpp += (item.hpp || 0) * (item.qty || 0);
         soldProducts.set(item.productId, sold);
         costOfGoodsSold += (item.hpp || 0) * (item.qty || 0);
@@ -1727,7 +2348,16 @@ export default function App() {
     const netProfit = grossProfit - operationalLoss;
     const estimatedNetCashFlow = revenue - stockPurchaseCashOut - operationalLoss;
     const soldList = Array.from(soldProducts.values()).sort((a, b) => b.qty - a.qty);
-    const unsoldProducts = products.filter((product) => !soldProducts.has(product.id));
+    const unsoldProducts = products
+      .filter((product) => !soldProducts.has(product.id))
+      .map((product) => {
+        if (!product.isPromotion) return product;
+        const componentAvailability = (product.promotionItems || []).map((component) => {
+          const sourceProduct = products.find((item) => item.id === component.productId);
+          return sourceProduct ? Math.floor(sourceProduct.stock / component.qty) : 0;
+        });
+        return { ...product, stock: componentAvailability.length ? Math.min(...componentAvailability) : 0 };
+      });
 
     return {
       periodTransactions,
@@ -1751,8 +2381,8 @@ export default function App() {
 
   const downloadFinancialPdf = async () => {
     const productRows = (items, emptyText) => items.length
-      ? items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.qty}</td><td>${formatRp(item.hpp)}</td><td>${formatRp(item.total)}</td><td>${formatRp(item.total - item.hpp)}</td></tr>`).join('')
-      : `<tr><td colspan="5">${emptyText}</td></tr>`;
+      ? items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.qty}</td><td>${formatRp(item.hpp)}</td><td>${formatRp(item.promotionDiscount)}</td><td>${formatRp(item.total)}</td><td>${formatRp(item.total - item.hpp)}</td></tr>`).join('')
+      : `<tr><td colspan="6">${emptyText}</td></tr>`;
     const unsoldRows = reportData.unsoldProducts.length
       ? reportData.unsoldProducts.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.category || '-')}</td><td>${item.stock}</td></tr>`).join('')
       : '<tr><td colspan="3">Semua produk memiliki penjualan pada periode ini.</td></tr>';
@@ -1767,36 +2397,61 @@ export default function App() {
         return `<tr><td>${escapeHtml(formatDateInput(mutation.date))}</td><td>${escapeHtml(typeLabel)}</td><td>${escapeHtml(product?.name || mutation.productId)}</td><td>${mutation.qty > 0 ? '+' : ''}${mutation.qty}</td><td>${formatRp(unitCost)}</td><td>${formatRp(Math.abs(mutation.qty || 0) * unitCost)}</td><td>${escapeHtml(mutation.operator || '-')}</td><td>${escapeHtml(mutation.note || '-')}</td></tr>`;
       }).join('')
       : '<tr><td colspan="8">Tidak ada mutasi stok pada periode ini.</td></tr>';
+    // Group transactions by cashier
+    const txByCashier = reportData.periodTransactions.reduce((groups, tx) => {
+      const key = tx.cashier || '-';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(tx);
+      return groups;
+    }, {});
+    const cashierNames = Object.keys(txByCashier).sort();
+    const renderTxHtml = (transaction) => {
+      const items = transaction.items || [];
+      const itemSubtotal = items.reduce((sum, item) => sum + (item.regularPrice ?? item.price ?? 0) * (item.qty || 0), 0);
+      const subtotal = transaction.subtotal ?? itemSubtotal;
+      const discount = transaction.discountAmount || 0;
+      const promotionDiscount = transaction.promotionDiscountAmount ?? items.reduce((sum, item) => (
+        sum + Math.max(0, (item.regularPrice || item.price || 0) - (item.price || 0)) * (item.qty || 0)
+      ), 0);
+      const total = transaction.total ?? Math.max(0, subtotal - promotionDiscount - discount);
+      const discountLabel = transaction.discountType === 'percent'
+        ? `${transaction.discountValue || 0}%`
+        : formatRp(transaction.discountValue || discount);
+      const itemRows = items.map((item) => {
+        const qty = item.qty || 0;
+        const sales = (item.price || 0) * qty;
+        const itemHpp = (item.hpp || 0) * qty;
+        const regularPrice = item.regularPrice ?? item.price ?? 0;
+        const bundleContents = item.components?.length
+          ? `<br><small>Paket: ${item.components.map((c) => `${escapeHtml(c.name)} x${c.qty}`).join(' + ')}</small>`
+          : '';
+        const promotionSaving = regularPrice > item.price
+          ? `<br><small>Hemat ${formatRp((regularPrice - item.price) * qty)}</small>`
+          : '';
+        return `<tr><td>${escapeHtml(item.name)}${bundleContents}</td><td>${qty}</td><td>${formatRp(regularPrice)} / ${formatRp(item.price || 0)}</td><td>${formatRp(item.hpp || 0)}</td><td>${formatRp(sales)}${promotionSaving}</td><td>${formatRp(itemHpp)}</td><td>${formatRp(sales - itemHpp)}</td></tr>`;
+      }).join('');
+      const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
+      const received = transaction.cashAmount ?? total;
+      return `<article class="transaction"><div class="transactionTitle"><strong>Transaksi ${escapeHtml(transaction.id)}</strong><strong>${formatRp(total)}</strong></div><div class="transactionMeta"><span>Tanggal: ${escapeHtml(new Date(transaction.date).toLocaleString('id-ID'))}</span><span>Pelanggan: ${escapeHtml(customerName)}${transaction.customer?.phone ? ` (${escapeHtml(transaction.customer.phone)})` : ''}</span><span>Metode: ${escapeHtml(transaction.method || '-')}</span></div><table><thead><tr><th>Barang</th><th>Qty</th><th>Harga Normal / Promo</th><th>HPP/Unit</th><th>Penjualan</th><th>HPP</th><th>Laba Kotor</th></tr></thead><tbody>${itemRows || '<tr><td colspan="7">Rincian barang tidak tersedia.</td></tr>'}</tbody></table><div class="transactionTotals"><span>Subtotal normal: ${formatRp(subtotal)}</span>${promotionDiscount ? `<span>Hemat paket promo: -${formatRp(promotionDiscount)}</span>` : ''}<span>Diskon tambahan (${escapeHtml(discountLabel)}): -${formatRp(discount)}</span><strong>Total Tagihan: ${formatRp(total)}</strong><span>${transaction.method === 'Tunai' ? `Uang diterima: ${formatRp(received)}` : `Dibayar: ${formatRp(received)}`}</span>${transaction.method === 'Tunai' ? `<span>Kembalian: ${formatRp(transaction.changeAmount ?? Math.max(0, received - total))}</span>` : ''}</div></article>`;
+    };
     const transactionRows = reportData.periodTransactions.length
-      ? reportData.periodTransactions.map((transaction) => {
-        const items = transaction.items || [];
-        const itemSubtotal = items.reduce((sum, item) => sum + (item.price || 0) * (item.qty || 0), 0);
-        const subtotal = transaction.subtotal ?? itemSubtotal;
-        const discount = transaction.discountAmount || 0;
-        const total = transaction.total ?? Math.max(0, subtotal - discount);
-        const discountLabel = transaction.discountType === 'percent'
-          ? `${transaction.discountValue || 0}%`
-          : formatRp(transaction.discountValue || discount);
-        const itemRows = items.map((item) => {
-          const qty = item.qty || 0;
-          const sales = (item.price || 0) * qty;
-          const itemHpp = (item.hpp || 0) * qty;
-          return `<tr><td>${escapeHtml(item.name)}</td><td>${qty}</td><td>${formatRp(item.price || 0)}</td><td>${formatRp(item.hpp || 0)}</td><td>${formatRp(sales)}</td><td>${formatRp(itemHpp)}</td><td>${formatRp(sales - itemHpp)}</td></tr>`;
-        }).join('');
-        const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
-        const received = transaction.cashAmount ?? total;
-        return `<article class="transaction"><div class="transactionTitle"><strong>Transaksi ${escapeHtml(transaction.id)}</strong><strong>${formatRp(total)}</strong></div><div class="transactionMeta"><span>Tanggal: ${escapeHtml(new Date(transaction.date).toLocaleString('id-ID'))}</span><span>Kasir: ${escapeHtml(transaction.cashier || '-')}</span><span>Pelanggan: ${escapeHtml(customerName)}${transaction.customer?.phone ? ` (${escapeHtml(transaction.customer.phone)})` : ''}</span><span>Metode: ${escapeHtml(transaction.method || '-')}</span></div><table><thead><tr><th>Barang</th><th>Qty</th><th>Harga Jual/Unit</th><th>HPP/Unit</th><th>Penjualan</th><th>HPP</th><th>Laba Kotor</th></tr></thead><tbody>${itemRows || '<tr><td colspan="7">Rincian barang tidak tersedia.</td></tr>'}</tbody></table><div class="transactionTotals"><span>Subtotal: ${formatRp(subtotal)}</span><span>Diskon (${escapeHtml(discountLabel)}): -${formatRp(discount)}</span><strong>Total Tagihan: ${formatRp(total)}</strong><span>${transaction.method === 'Tunai' ? `Uang diterima: ${formatRp(received)}` : `Dibayar: ${formatRp(received)}`}</span>${transaction.method === 'Tunai' ? `<span>Kembalian: ${formatRp(transaction.changeAmount ?? Math.max(0, received - total))}</span>` : ''}</div></article>`;
+      ? cashierNames.map((cashierName) => {
+        const txList = txByCashier[cashierName];
+        const cashierTotal = txList.reduce((sum, tx) => sum + (tx.total || 0), 0);
+        const cashierUnits = txList.reduce((sum, tx) => sum + (tx.items || []).reduce((s, i) => s + (i.qty || 0), 0), 0);
+        return `<div class="cashierGroup"><div class="cashierHeader"><span>&#128100; Kasir: <strong>${escapeHtml(cashierName)}</strong></span><span>${txList.length} transaksi &nbsp;|&nbsp; ${cashierUnits} unit &nbsp;|&nbsp; <strong>${formatRp(cashierTotal)}</strong></span></div>${txList.map(renderTxHtml).join('')}<div class="cashierSubtotal"><span>Sub-total Kasir <strong>${escapeHtml(cashierName)}</strong></span><span>${txList.length} transaksi &nbsp;&bull;&nbsp; ${cashierUnits} unit &nbsp;&bull;&nbsp; <strong>${formatRp(cashierTotal)}</strong></span></div></div>`;
       }).join('')
       : '<p>Belum ada penjualan pada periode ini.</p>';
     const totalUnitsSold = reportData.soldList.reduce((sum, item) => sum + item.qty, 0);
-    const grossSales = reportData.soldList.reduce((sum, item) => sum + item.total, 0);
+    const grossSales = reportData.soldList.reduce((sum, item) => sum + item.total, 0)
+      + reportData.periodTransactions.reduce((sum, transaction) => sum + (transaction.discountAmount || 0) + (transaction.promotionDiscountAmount || 0), 0);
     const cashTransactions = reportData.periodTransactions.filter((transaction) => transaction.method === 'Tunai');
     const cashReceipts = cashTransactions.reduce((sum, transaction) => sum + (transaction.total || 0), 0);
     const nonCashReceipts = reportData.revenue - cashReceipts;
     const cashCollected = cashTransactions.reduce((sum, transaction) => sum + (transaction.cashAmount || 0), 0);
     const cashChange = cashTransactions.reduce((sum, transaction) => sum + (transaction.changeAmount || 0), 0);
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-      @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#1f2937;font-size:9px;margin:0}h1{font-size:19px;margin:0 0 4px;color:#111827}h2{font-size:11px;margin:13px 0 5px;border-bottom:1px solid #9ca3af;padding-bottom:4px;color:#111827;break-after:avoid}.reportHeader{border-bottom:2px solid #047857;padding-bottom:8px;margin-bottom:8px}.subtitle{color:#4b5563;font-size:9px}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}.metric{padding:6px;border:1px solid #d1d5db}.metric span{display:block;color:#4b5563;font-size:8px}.metric strong{display:block;margin-top:3px;font-size:10px;color:#111827}p{line-height:1.4;margin:5px 0}table{width:100%;border-collapse:collapse;margin:4px 0 8px;table-layout:auto}thead{display:table-header-group}tr{break-inside:avoid;page-break-inside:avoid}th,td{border:1px solid #bfc5cc;padding:4px;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#eef5f1;color:#1f2937;font-size:8px}.transaction{border:1px solid #aeb6bf;padding:6px;margin:7px 0;break-inside:auto;page-break-inside:auto}.transactionTitle{display:flex;justify-content:space-between;gap:10px;font-size:10px;color:#111827}.transactionMeta{display:flex;flex-wrap:wrap;gap:4px 14px;color:#374151;font-size:8px;line-height:1.4;margin:5px 0}.transaction table{font-size:8px}.transactionTotals{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:5px;padding-top:5px;border-top:1px solid #cbd5e1;font-size:8px}.foot{margin-top:12px;padding-top:5px;border-top:1px solid #d1d5db;color:#4b5563;font-size:8px}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+      @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#1f2937;font-size:9px;margin:0}h1{font-size:19px;margin:0 0 4px;color:#111827}h2{font-size:11px;margin:13px 0 5px;border-bottom:1px solid #9ca3af;padding-bottom:4px;color:#111827;break-after:avoid}.reportHeader{border-bottom:2px solid #047857;padding-bottom:8px;margin-bottom:8px}.subtitle{color:#4b5563;font-size:9px}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}.metric{padding:6px;border:1px solid #d1d5db}.metric span{display:block;color:#4b5563;font-size:8px}.metric strong{display:block;margin-top:3px;font-size:10px;color:#111827}p{line-height:1.4;margin:5px 0}table{width:100%;border-collapse:collapse;margin:4px 0 8px;table-layout:auto}thead{display:table-header-group}tr{break-inside:avoid;page-break-inside:avoid}th,td{border:1px solid #bfc5cc;padding:4px;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#eef5f1;color:#1f2937;font-size:8px}.transaction{border:1px solid #aeb6bf;padding:6px;margin:7px 0;break-inside:auto;page-break-inside:auto}.transactionTitle{display:flex;justify-content:space-between;gap:10px;font-size:10px;color:#111827}.transactionMeta{display:flex;flex-wrap:wrap;gap:4px 14px;color:#374151;font-size:8px;line-height:1.4;margin:5px 0}.transaction table{font-size:8px}.transactionTotals{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:5px;padding-top:5px;border-top:1px solid #cbd5e1;font-size:8px}.cashierGroup{margin:10px 0 16px;border:2px solid #047857;border-radius:4px;overflow:hidden}.cashierHeader{background:#047857;color:#fff;padding:6px 10px;display:flex;justify-content:space-between;align-items:center;font-size:9px;break-after:avoid}.cashierHeader strong{font-size:10px}.cashierSubtotal{background:#eef5f1;border-top:2px solid #047857;padding:5px 10px;display:flex;justify-content:space-between;align-items:center;font-size:8px;color:#1f2937}.cashierSubtotal strong{color:#047857}.cashierGroup .transaction{margin:6px 8px;border-radius:2px}.foot{margin-top:12px;padding-top:5px;border-top:1px solid #d1d5db;color:#4b5563;font-size:8px}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
       </style></head><body>
       <header class="reportHeader"><h1>LAPORAN KEUANGAN DAN PENJUALAN</h1><div class="subtitle">${escapeHtml(reportData.periodLabel)} | Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</div></header>
       <h2>Ringkasan Arus Kas dan Laba</h2><div class="grid">
@@ -1816,7 +2471,7 @@ export default function App() {
       <div class="metric"><span>Jumlah Transaksi</span><strong>${reportData.periodTransactions.length}</strong></div>
       <div class="metric"><span>Total Unit Terjual</span><strong>${totalUnitsSold}</strong></div></div>
       <h2>Analisis</h2><p>Periode ini mencatat ${reportData.periodTransactions.length} transaksi dan ${totalUnitsSold} unit terjual dengan penerimaan bersih setelah diskon sebesar ${formatRp(reportData.revenue)}. Total diskon tercatat ${formatRp(reportData.discountTotal)}. Margin laba kotor ${reportData.revenue ? `${((reportData.grossProfit / reportData.revenue) * 100).toFixed(1)}%` : '0%'} dari penerimaan. Arus kas bersih estimasi memperhitungkan penerimaan penjualan dikurangi penambahan stok dan kehilangan stok. Laba bersih estimasi memperhitungkan HPP barang terjual dan kehilangan stok; pembelian stok merupakan arus kas persediaan, bukan beban laba langsung.</p>
-      <h2>Ringkasan Produk Terjual</h2><table><thead><tr><th>Produk</th><th>Qty</th><th>HPP</th><th>Penjualan Bruto</th><th>Laba Kotor</th></tr></thead><tbody>${productRows(reportData.soldList, 'Belum ada produk terjual.')}</tbody></table>
+      <h2>Ringkasan Produk Terjual</h2><table><thead><tr><th>Produk</th><th>Qty</th><th>HPP</th><th>Hemat Promo</th><th>Penjualan Setelah Promo</th><th>Laba Kotor</th></tr></thead><tbody>${productRows(reportData.soldList, 'Belum ada produk terjual.')}</tbody></table>
       <h2>Produk Tidak Terjual</h2><table><thead><tr><th>Produk</th><th>Kategori</th><th>Stok Saat Ini</th></tr></thead><tbody>${unsoldRows}</tbody></table>
       <h2>Metode Pembayaran</h2><table><thead><tr><th>Metode</th><th>Transaksi</th><th>Total</th></tr></thead><tbody>${paymentRows}</tbody></table>
       <h2>Rincian Penjualan Per Transaksi</h2>${transactionRows}
@@ -1825,10 +2480,7 @@ export default function App() {
 
     try {
       if (Platform.OS === 'web') {
-        const [{ jsPDF }, { default: autoTable }] = await Promise.all([
-          import('jspdf'),
-          import('jspdf-autotable'),
-        ]);
+        const { jsPDF, autoTable } = await loadWebPdfModules();
         const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
         const pageWidth = pdf.internal.pageSize.getWidth();
         const pageHeight = pdf.internal.pageSize.getHeight();
@@ -1927,10 +2579,10 @@ export default function App() {
 
         addSection('RINGKASAN PRODUK TERJUAL');
         addTable(
-          ['Produk', 'Qty terjual', 'HPP total', 'Penjualan bruto', 'Laba kotor'],
+          ['Produk', 'Qty terjual', 'HPP total', 'Hemat promo', 'Penjualan setelah promo', 'Laba kotor'],
           reportData.soldList.length
-            ? reportData.soldList.map((item) => [item.name, item.qty, formatRp(item.hpp), formatRp(item.total), formatRp(item.total - item.hpp)])
-            : [['Tidak ada produk terjual pada periode ini.', '', '', '', '']],
+            ? reportData.soldList.map((item) => [item.name, item.qty, formatRp(item.hpp), formatRp(item.promotionDiscount), formatRp(item.total), formatRp(item.total - item.hpp)])
+            : [['Tidak ada produk terjual pada periode ini.', '', '', '', '', '']],
         );
 
         addSection(`PRODUK TIDAK TERJUAL (${reportData.unsoldProducts.length})`);
@@ -1949,57 +2601,88 @@ export default function App() {
             : [['Belum ada transaksi.', '', '']],
         );
 
-        addSection('RINCIAN PENJUALAN PER TRANSAKSI');
+        addSection('RINCIAN PENJUALAN PER TRANSAKSI (DIKELOMPOKKAN PER KASIR)');
         if (!reportData.periodTransactions.length) {
           addTable(['Informasi'], [['Belum ada penjualan pada periode ini.']]);
         }
-        reportData.periodTransactions.forEach((transaction) => {
-          if (cursorY > pageHeight - 38) {
-            pdf.addPage();
-            cursorY = 16;
-          }
-          const items = transaction.items || [];
-          const itemSubtotal = items.reduce((sum, item) => sum + (item.price || 0) * (item.qty || 0), 0);
-          const subtotal = transaction.subtotal ?? itemSubtotal;
-          const discount = transaction.discountAmount || 0;
-          const total = transaction.total ?? Math.max(0, subtotal - discount);
-          const received = transaction.cashAmount ?? total;
-          const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
+        cashierNames.forEach((cashierName) => {
+          const cashierTxList = txByCashier[cashierName];
+          const cashierTotal = cashierTxList.reduce((sum, tx) => sum + (tx.total || 0), 0);
+          const cashierUnits = cashierTxList.reduce((sum, tx) => sum + (tx.items || []).reduce((s, i) => s + (i.qty || 0), 0), 0);
+          // Cashier header bar
+          if (cursorY > pageHeight - 30) { pdf.addPage(); cursorY = 16; }
+          pdf.setFillColor(4, 120, 87);
+          pdf.rect(margin, cursorY - 4, pageWidth - margin * 2, 8, 'F');
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(9);
+          pdf.setTextColor(255, 255, 255);
+          pdf.text(`Kasir: ${cashierName}`, margin + 2, cursorY + 1);
+          pdf.setFontSize(8);
+          pdf.text(`${cashierTxList.length} transaksi  |  ${cashierUnits} unit  |  ${formatRp(cashierTotal)}`, pageWidth - margin - 2, cursorY + 1, { align: 'right' });
+          cursorY += 8;
+          cashierTxList.forEach((transaction) => {
+            if (cursorY > pageHeight - 38) {
+              pdf.addPage();
+              cursorY = 16;
+            }
+            const items = transaction.items || [];
+            const itemSubtotal = items.reduce((sum, item) => sum + (item.price || 0) * (item.qty || 0), 0);
+            const subtotal = transaction.subtotal ?? itemSubtotal;
+            const discount = transaction.discountAmount || 0;
+            const promotionDiscount = transaction.promotionDiscountAmount ?? items.reduce((sum, item) => (
+              sum + Math.max(0, (item.regularPrice || item.price || 0) - (item.price || 0)) * (item.qty || 0)
+            ), 0);
+            const total = transaction.total ?? Math.max(0, subtotal - promotionDiscount - discount);
+            const received = transaction.cashAmount ?? total;
+            const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
+            pdf.setFont('helvetica', 'bold');
+            pdf.setFontSize(8);
+            pdf.setTextColor(25, 55, 43);
+            pdf.text(`${transaction.id} | ${new Date(transaction.date).toLocaleString('id-ID')}`, margin, cursorY);
+            cursorY += 4;
+            pdf.setFont('helvetica', 'normal');
+            pdf.setTextColor(45, 50, 48);
+            const meta = `Pelanggan: ${customerName}${transaction.customer?.phone ? ` (${transaction.customer.phone})` : ''} | Pembayaran: ${transaction.method || '-'}`;
+            const metaLines = pdf.splitTextToSize(meta, pageWidth - margin * 2);
+            pdf.text(metaLines, margin, cursorY);
+            cursorY += metaLines.length * 3.5 + 1;
+            addTable(
+              ['Barang', 'Qty', 'Harga jual/unit', 'HPP/unit', 'Penjualan', 'HPP', 'Laba kotor'],
+              items.length
+                ? items.map((item) => {
+                  const qty = item.qty || 0;
+                  const sales = (item.price || 0) * qty;
+                  const itemHpp = (item.hpp || 0) * qty;
+                  return [item.name, qty, formatRp(item.price || 0), formatRp(item.hpp || 0), formatRp(sales), formatRp(itemHpp), formatRp(sales - itemHpp)];
+                })
+                : [['Rincian barang tidak tersedia.', '', '', '', '', '', '']],
+            );
+            const discountLabel = transaction.discountType === 'percent'
+              ? `${transaction.discountValue || 0}%`
+              : formatRp(transaction.discountValue || discount);
+            const settlementRows = [
+              ['Subtotal normal', formatRp(subtotal), 'Hemat paket promo', `- ${formatRp(promotionDiscount)}`],
+              ['Diskon tambahan', `${discountLabel} (-${formatRp(discount)})`, 'Total tagihan', formatRp(total)],
+              [transaction.method === 'Tunai' ? 'Uang diterima' : 'Dibayar', formatRp(received), '', ''],
+            ];
+            if (transaction.method === 'Tunai') {
+              settlementRows.push(['Kembalian', formatRp(transaction.changeAmount ?? Math.max(0, received - total)), '', '']);
+            }
+            addTable(['Keterangan', 'Nilai', 'Keterangan', 'Nilai'], settlementRows, {
+              columnStyles: { 0: { cellWidth: 45 }, 1: { cellWidth: 65 }, 2: { cellWidth: 45 }, 3: { cellWidth: 65 } },
+            });
+          });
+          // Cashier sub-total bar
+          if (cursorY > pageHeight - 12) { pdf.addPage(); cursorY = 16; }
+          pdf.setFillColor(238, 245, 241);
+          pdf.rect(margin, cursorY - 2, pageWidth - margin * 2, 7, 'F');
+          pdf.setDrawColor(4, 120, 87);
+          pdf.rect(margin, cursorY - 2, pageWidth - margin * 2, 7, 'S');
           pdf.setFont('helvetica', 'bold');
           pdf.setFontSize(8);
           pdf.setTextColor(25, 55, 43);
-          pdf.text(`${transaction.id} | ${new Date(transaction.date).toLocaleString('id-ID')}`, margin, cursorY);
-          cursorY += 4;
-          pdf.setFont('helvetica', 'normal');
-          pdf.setTextColor(45, 50, 48);
-          const meta = `Kasir: ${transaction.cashier || '-'} | Pelanggan: ${customerName}${transaction.customer?.phone ? ` (${transaction.customer.phone})` : ''} | Pembayaran: ${transaction.method || '-'}`;
-          const metaLines = pdf.splitTextToSize(meta, pageWidth - margin * 2);
-          pdf.text(metaLines, margin, cursorY);
-          cursorY += metaLines.length * 3.5 + 1;
-          addTable(
-            ['Barang', 'Qty', 'Harga jual/unit', 'HPP/unit', 'Penjualan', 'HPP', 'Laba kotor'],
-            items.length
-              ? items.map((item) => {
-                const qty = item.qty || 0;
-                const sales = (item.price || 0) * qty;
-                const itemHpp = (item.hpp || 0) * qty;
-                return [item.name, qty, formatRp(item.price || 0), formatRp(item.hpp || 0), formatRp(sales), formatRp(itemHpp), formatRp(sales - itemHpp)];
-              })
-              : [['Rincian barang tidak tersedia.', '', '', '', '', '', '']],
-          );
-          const discountLabel = transaction.discountType === 'percent'
-            ? `${transaction.discountValue || 0}%`
-            : formatRp(transaction.discountValue || discount);
-          const settlementRows = [
-            ['Subtotal', formatRp(subtotal), 'Diskon', `${discountLabel} (-${formatRp(discount)})`],
-            ['Total tagihan', formatRp(total), transaction.method === 'Tunai' ? 'Uang diterima' : 'Dibayar', formatRp(received)],
-          ];
-          if (transaction.method === 'Tunai') {
-            settlementRows.push(['Kembalian', formatRp(transaction.changeAmount ?? Math.max(0, received - total)), '', '']);
-          }
-          addTable(['Keterangan', 'Nilai', 'Keterangan', 'Nilai'], settlementRows, {
-            columnStyles: { 0: { cellWidth: 45 }, 1: { cellWidth: 65 }, 2: { cellWidth: 45 }, 3: { cellWidth: 65 } },
-          });
+          pdf.text(`Sub-total Kasir ${cashierName}:  ${cashierTxList.length} transaksi  |  ${cashierUnits} unit  |  ${formatRp(cashierTotal)}`, margin + 2, cursorY + 3);
+          cursorY += 12;
         });
 
         addSection('MUTASI STOK PADA PERIODE INI');
@@ -2015,7 +2698,7 @@ export default function App() {
             : [['Tidak ada mutasi stok pada periode ini.', '', '', '', '', '', '', '']],
         );
 
-        pdf.save(`laporan-keuangan-${reportPeriod}-${formatDateInput(new Date())}.pdf`);
+        downloadPdfDocument(pdf, `laporan-keuangan-${reportPeriod}-${formatDateInput(new Date())}.pdf`);
         return;
       }
       const file = await Print.printToFileAsync({ html });
@@ -2026,31 +2709,35 @@ export default function App() {
       }
     } catch (error) {
       console.error('Financial PDF export error:', error);
-      Alert.alert('Gagal membuat PDF', 'Coba lagi setelah memastikan perangkat dapat membuat atau membagikan file.');
+      throw error;
     }
   };
 
   const cartCalculations = useMemo(() => {
     let subtotal = 0;
+    let promotionDiscount = 0;
     cart.forEach((item) => {
       const p = products.find((prod) => prod.id === item.productId);
       if (p) {
-        subtotal += p.price * item.qty;
+        const regularPrice = p.isPromotion ? p.regularPrice || p.price : p.price;
+        subtotal += regularPrice * item.qty;
+        if (p.isPromotion) promotionDiscount += Math.max(0, regularPrice - p.price) * item.qty;
       }
     });
 
+    const discountedSubtotal = subtotal - promotionDiscount;
     const discVal = parseFloat(discountValue) || 0;
     let discountAmount = 0;
     if (discountType === 'percent') {
-      discountAmount = (subtotal * discVal) / 100;
+      discountAmount = (discountedSubtotal * discVal) / 100;
     } else {
       discountAmount = discVal;
     }
 
-    if (discountAmount > subtotal) discountAmount = subtotal;
+    if (discountAmount > discountedSubtotal) discountAmount = discountedSubtotal;
 
-    const grandTotal = subtotal - discountAmount;
-    return { subtotal, discountAmount, grandTotal };
+    const grandTotal = discountedSubtotal - discountAmount;
+    return { subtotal, promotionDiscount, discountedSubtotal, discountAmount, grandTotal };
   }, [cart, products, discountType, discountValue]);
 
   const changeDiscountType = (type) => {
@@ -2060,33 +2747,63 @@ export default function App() {
   };
 
   const addToCart = (product) => {
-    if (product.stock <= 0) {
-      Alert.alert('Stok Habis', 'Produk ini sudah tidak tersedia.');
-      return;
-    }
-
     setCart((prevCart) => {
       const existing = prevCart.find((i) => i.productId === product.id);
-      if (existing) {
-        if (existing.qty + 1 > product.stock) {
-          Alert.alert('Batas Stok', `Hanya tersedia ${product.stock} unit.`);
-          return prevCart;
-        }
-        return prevCart.map((i) => (i.productId === product.id ? { ...i, qty: i.qty + 1 } : i));
+      const nextQty = (existing?.qty || 0) + 1;
+      const demand = new Map();
+      prevCart.filter((item) => item.productId !== product.id).forEach((item) => {
+        const cartProduct = products.find((candidate) => candidate.id === item.productId);
+        const requirements = cartProduct?.isPromotion
+          ? cartProduct.promotionItems || []
+          : [{ productId: cartProduct?.id, qty: 1 }];
+        requirements.forEach((requirement) => {
+          demand.set(requirement.productId, (demand.get(requirement.productId) || 0) + requirement.qty * item.qty);
+        });
+      });
+      const requirements = product.isPromotion
+        ? product.promotionItems || []
+        : [{ productId: product.id, qty: 1 }];
+      const hasEnoughStock = requirements.every((requirement) => {
+        const component = products.find((candidate) => candidate.id === requirement.productId);
+        return component && component.stock >= (demand.get(component.id) || 0) + requirement.qty * nextQty;
+      });
+      if (!hasEnoughStock) {
+        Alert.alert('Stok Tidak Cukup', 'Stok salah satu barang dalam paket atau keranjang sudah tidak mencukupi.');
+        return prevCart;
       }
+      if (existing) return prevCart.map((i) => (i.productId === product.id ? { ...i, qty: nextQty } : i));
       return [...prevCart, { productId: product.id, qty: 1 }];
     });
   };
 
   const updateCartQty = (productId, delta) => {
     const prod = products.find((p) => p.id === productId);
+    if (!prod) return;
     setCart((prevCart) => {
       return prevCart
         .map((item) => {
           if (item.productId === productId) {
             const newQty = item.qty + delta;
-            if (newQty > prod.stock) {
-              Alert.alert('Stok Tidak Cukup', 'Melebihi sisa stok.');
+            if (newQty <= 0) return { ...item, qty: newQty };
+            const otherDemand = new Map();
+            prevCart.filter((otherItem) => otherItem.productId !== productId).forEach((otherItem) => {
+              const otherProduct = products.find((candidate) => candidate.id === otherItem.productId);
+              const requirements = otherProduct?.isPromotion
+                ? otherProduct.promotionItems || []
+                : [{ productId: otherProduct?.id, qty: 1 }];
+              requirements.forEach((requirement) => {
+                otherDemand.set(requirement.productId, (otherDemand.get(requirement.productId) || 0) + requirement.qty * otherItem.qty);
+              });
+            });
+            const requirements = prod.isPromotion
+              ? prod.promotionItems || []
+              : [{ productId: prod.id, qty: 1 }];
+            const hasEnoughStock = requirements.every((requirement) => {
+              const component = products.find((candidate) => candidate.id === requirement.productId);
+              return component && component.stock >= (otherDemand.get(component.id) || 0) + requirement.qty * newQty;
+            });
+            if (!hasEnoughStock) {
+              Alert.alert('Stok Tidak Cukup', 'Stok salah satu barang dalam paket atau keranjang sudah tidak mencukupi.');
               return item;
             }
             return { ...item, qty: newQty };
@@ -2152,30 +2869,65 @@ export default function App() {
       return;
     }
 
+    const stockDemand = new Map();
+    cart.forEach((cartItem) => {
+      const product = products.find((candidate) => candidate.id === cartItem.productId);
+      const requirements = product?.isPromotion
+        ? product.promotionItems || []
+        : [{ productId: product?.id, qty: 1 }];
+      requirements.forEach((requirement) => {
+        stockDemand.set(requirement.productId, (stockDemand.get(requirement.productId) || 0) + requirement.qty * cartItem.qty);
+      });
+    });
+    const insufficientStock = [...stockDemand.entries()].find(([productId, qty]) => {
+      const component = products.find((candidate) => candidate.id === productId);
+      return !component || component.stock < qty;
+    });
+    if (insufficientStock) {
+      const component = products.find((candidate) => candidate.id === insufficientStock[0]);
+      Alert.alert('Stok Tidak Cukup', `${component?.name || 'Barang paket'} hanya tersedia ${component?.stock || 0} unit.`);
+      return;
+    }
+
     const txItems = cart.map((item) => {
       const p = products.find((prod) => prod.id === item.productId);
+      const components = p.isPromotion
+        ? p.promotionItems.map((component) => {
+          const product = products.find((candidate) => candidate.id === component.productId);
+          return {
+            productId: component.productId,
+            name: product?.name || component.productId,
+            qty: component.qty,
+          };
+        })
+        : [];
+      const bundleHpp = p.isPromotion
+        ? p.promotionItems.reduce((sum, component) => {
+          const product = products.find((candidate) => candidate.id === component.productId);
+          return sum + (product?.hpp || 0) * component.qty;
+        }, 0)
+        : p.hpp;
       return {
         productId: p.id,
         name: p.name,
         qty: item.qty,
         price: p.price,
-        hpp: p.hpp,
+        hpp: bundleHpp,
+        isPromotion: !!p.isPromotion,
+        regularPrice: p.isPromotion ? p.regularPrice : p.price,
+        components,
       };
     });
 
-    // Build stock updates for Firestore batch
-    const stockUpdates = cart.map((cartItem) => {
-      const p = products.find((prod) => prod.id === cartItem.productId);
-      return { id: p.id, newStock: p.stock - cartItem.qty };
+    const stockUpdates = [...stockDemand.entries()].map(([id, qty]) => {
+      const product = products.find((candidate) => candidate.id === id);
+      return { id, newStock: product.stock - qty };
     });
 
     setProducts((prev) =>
       prev.map((p) => {
-        const cartItem = cart.find((c) => c.productId === p.id);
-        if (cartItem) {
-          return { ...p, stock: p.stock - cartItem.qty };
-        }
-        return p;
+        const quantity = stockDemand.get(p.id) || 0;
+        return quantity ? { ...p, stock: p.stock - quantity } : p;
       })
     );
 
@@ -2191,6 +2943,7 @@ export default function App() {
       subtotal: cartCalculations.subtotal,
       discountType,
       discountValue: parseFloat(discountValue) || 0,
+      promotionDiscountAmount: cartCalculations.promotionDiscount,
       discountAmount: cartCalculations.discountAmount,
       total: cartCalculations.grandTotal,
       method: payMethod,
@@ -2226,9 +2979,11 @@ export default function App() {
       setProdBarcode(product.barcode);
       setProdName(product.name);
       setProdCategory(product.category);
-      setProdStock(product.stock.toString());
-      setProdHpp(product.hpp.toString());
+      setProdStock((product.stock || 0).toString());
+      setProdHpp((product.hpp || 0).toString());
       setProdPrice(product.price.toString());
+      setIsPromotionProduct(!!product.isPromotion);
+      setPromotionItems(product.promotionItems || []);
     } else {
       setEditingProduct(null);
       setProdBarcode('899' + Math.floor(10000000 + Math.random() * 90000000));
@@ -2237,7 +2992,10 @@ export default function App() {
       setProdStock('20');
       setProdHpp('50000');
       setProdPrice('70000');
+      setIsPromotionProduct(false);
+      setPromotionItems([]);
     }
+    setPromotionSearch('');
     setIsProductModalOpen(true);
   };
 
@@ -2248,17 +3006,43 @@ export default function App() {
     }
 
     const stockNum = parseInt(prodStock) || 0;
-    const hppNum = parseFloat(prodHpp) || 0;
+    const enteredHpp = parseFloat(prodHpp) || 0;
     const priceNum = parseFloat(prodPrice) || 0;
+    const selectedPromotionItems = isPromotionProduct
+      ? promotionItems.filter((component) => products.some((product) => product.id === component.productId && !product.isPromotion))
+      : [];
+    if (isPromotionProduct && selectedPromotionItems.length === 0) {
+      Alert.alert('Paket belum lengkap', 'Pilih minimal satu barang untuk dimasukkan ke paket promosi.');
+      return;
+    }
+    const regularPrice = isPromotionProduct
+      ? selectedPromotionItems.reduce((sum, component) => {
+        const product = products.find((item) => item.id === component.productId);
+        return sum + (product?.price || 0) * component.qty;
+      }, 0)
+      : priceNum;
+    const hppNum = isPromotionProduct
+      ? selectedPromotionItems.reduce((sum, component) => {
+        const product = products.find((item) => item.id === component.productId);
+        return sum + (product?.hpp || 0) * component.qty;
+      }, 0)
+      : enteredHpp;
+    if (isPromotionProduct && (priceNum <= 0 || priceNum >= regularPrice)) {
+      Alert.alert('Harga promo tidak valid', `Harga promo harus lebih murah dari harga normal paket (${formatRp(regularPrice)}).`);
+      return;
+    }
 
     if (editingProduct) {
       const updatedData = {
         barcode: prodBarcode,
         name: prodName,
-        category: prodCategory,
-        stock: stockNum,
+        category: isPromotionProduct ? 'Promo' : prodCategory,
+        stock: isPromotionProduct ? 0 : stockNum,
         hpp: hppNum,
         price: priceNum,
+        isPromotion: isPromotionProduct,
+        regularPrice,
+        promotionItems: selectedPromotionItems,
       };
       setProducts((prev) =>
         prev.map((p) =>
@@ -2274,14 +3058,17 @@ export default function App() {
     } else {
       const newProd = {
         id: 'P' + Date.now(),
-        barcode: prodBarcode,
+        barcode: isPromotionProduct ? `PROMO-${Date.now()}` : prodBarcode,
         name: prodName,
-        category: prodCategory,
-        stock: stockNum,
+        category: isPromotionProduct ? 'Promo' : prodCategory,
+        stock: isPromotionProduct ? 0 : stockNum,
         hpp: hppNum,
         price: priceNum,
-        minStock: 5,
+        minStock: isPromotionProduct ? 0 : 5,
         image: 'https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80',
+        isPromotion: isPromotionProduct,
+        regularPrice,
+        promotionItems: selectedPromotionItems,
       };
       setProducts((prev) => [newProd, ...prev]);
       // Write to Firestore
@@ -2433,15 +3220,53 @@ export default function App() {
     setIsUserSwitchOpen(false);
   };
 
-  const categoriesList = useMemo(() => ['All', ...new Set(products.map((p) => p.category))], [products]);
+  const togglePromotionItem = (productId) => {
+    setPromotionItems((previous) => previous.some((item) => item.productId === productId)
+      ? previous.filter((item) => item.productId !== productId)
+      : [...previous, { productId, qty: 1 }]);
+  };
+
+  const updatePromotionItemQty = (productId, delta) => {
+    setPromotionItems((previous) => previous.map((item) => (
+      item.productId === productId ? { ...item, qty: Math.max(1, item.qty + delta) } : item
+    )));
+  };
+
+  const promotionRegularPrice = promotionItems.reduce((sum, component) => {
+    const product = products.find((item) => item.id === component.productId);
+    return sum + (product?.price || 0) * component.qty;
+  }, 0);
+
+  const availablePromotionProducts = products.filter((product) => (
+    !product.isPromotion
+    && (product.name.toLowerCase().includes(promotionSearch.toLowerCase())
+      || product.barcode.includes(promotionSearch))
+  ));
+
+  const categoriesList = useMemo(() => [
+    'All',
+    'Promo',
+    ...new Set(products.filter((product) => !product.isPromotion).map((product) => product.category)),
+  ], [products]);
+
+  const getAvailableProductStock = (product) => {
+    if (!product.isPromotion) return product.stock || 0;
+    const components = product.promotionItems || [];
+    if (components.length === 0) return 0;
+    return Math.min(...components.map((component) => {
+      const sourceProduct = products.find((item) => item.id === component.productId);
+      return sourceProduct ? Math.floor(sourceProduct.stock / component.qty) : 0;
+    }));
+  };
 
   const filteredPosProducts = useMemo(() => {
     return products.filter((p) => {
-      const matchCat = selectedCategory === 'All' || p.category === selectedCategory;
+      const matchCat = selectedCategory === 'All'
+        || (selectedCategory === 'Promo' ? p.isPromotion : !p.isPromotion && p.category === selectedCategory);
       const matchQuery =
         p.name.toLowerCase().includes(posSearch.toLowerCase()) || p.barcode.includes(posSearch);
       return matchCat && matchQuery;
-    });
+    }).map((product) => ({ ...product, stock: getAvailableProductStock(product) }));
   }, [products, selectedCategory, posSearch]);
 
   const filteredCrudProducts = useMemo(() => {
@@ -2454,6 +3279,188 @@ export default function App() {
   }, [products, crudSearch]);
 
   const totalCartCount = useMemo(() => cart.reduce((sum, item) => sum + item.qty, 0), [cart]);
+
+  const getActiveCashierTabSnapshot = () => ({
+    id: activeCashierTabId,
+    isClosable: cashierTabs.find((tab) => tab.id === activeCashierTabId)?.isClosable || false,
+    user: currentUser,
+    shiftId: activeShiftId,
+    cart,
+    selectedCustomer,
+    selectedTransactionDate,
+    discountType,
+    discountValue,
+    payMethod,
+    cashAmount,
+    activeTab,
+  });
+
+  const loadCashierTab = (tab) => {
+    setActiveCashierTabId(tab.id);
+    setCurrentUser(tab.user || null);
+    setActiveShiftId(tab.shiftId || null);
+    setCart(tab.cart || []);
+    setSelectedCustomer(tab.selectedCustomer || null);
+    setSelectedTransactionDate(tab.selectedTransactionDate || formatDateInput(new Date()));
+    setDiscountType(tab.discountType || 'percent');
+    setDiscountValue(tab.discountValue || '0');
+    setPayMethod(tab.payMethod || 'Tunai');
+    setCashAmount(tab.cashAmount || '');
+    setActiveTab(tab.activeTab || 'pos');
+    setLoginUsername('');
+    setLoginPassword('');
+    setLoginError('');
+    setIsCartModalOpen(false);
+  };
+
+  const switchCashierTab = (tabId) => {
+    if (tabId === activeCashierTabId) return;
+    const nextTab = cashierTabs.find((tab) => tab.id === tabId);
+    if (!nextTab) return;
+    const currentSnapshot = getActiveCashierTabSnapshot();
+    setCashierTabs((tabs) => tabs.map((tab) => (
+      tab.id === activeCashierTabId ? currentSnapshot : tab
+    )));
+    loadCashierTab(nextTab);
+  };
+
+  const openCashierTab = () => {
+    const currentSnapshot = getActiveCashierTabSnapshot();
+    const newShiftId = currentUser
+      ? `SHIFT-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+      : null;
+    const newTab = {
+      id: `cashier-tab-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      isClosable: true,
+      user: currentUser,
+      shiftId: newShiftId,
+      cart: [],
+      selectedCustomer: null,
+      selectedTransactionDate: formatDateInput(new Date()),
+      discountType: 'percent',
+      discountValue: '0',
+      payMethod: 'Tunai',
+      cashAmount: '',
+      activeTab: 'pos',
+    };
+    setCashierTabs((tabs) => [
+      ...tabs.map((tab) => (tab.id === activeCashierTabId ? currentSnapshot : tab)),
+      newTab,
+    ]);
+    loadCashierTab(newTab);
+  };
+
+  const closeCashierTab = (tabId) => {
+    const tabToClose = cashierTabs.find((tab) => tab.id === tabId);
+    if (!tabToClose?.isClosable) {
+      Alert.alert('Tab tidak dapat ditutup', 'Hanya tab kasir tambahan yang dapat ditutup.');
+      return;
+    }
+
+    const activeTabSnapshot = tabId === activeCashierTabId
+      ? getActiveCashierTabSnapshot()
+      : tabToClose;
+    if (activeTabSnapshot.cart.length > 0) {
+      Alert.alert('Keranjang belum kosong', 'Selesaikan atau kosongkan transaksi sebelum menutup tab ini.');
+      return;
+    }
+
+    const hasShiftActivity = tabToClose.shiftId && (
+      transactions.some((transaction) => transaction.shiftId === tabToClose.shiftId)
+      || mutations.some((mutation) => mutation.shiftId === tabToClose.shiftId)
+    );
+    if (hasShiftActivity) {
+      Alert.alert('Shift masih aktif', 'Tutup shift kasir terlebih dahulu sebelum menutup tab ini.');
+      return;
+    }
+
+    const remainingTabs = cashierTabs
+      .map((tab) => (tab.id === activeCashierTabId ? getActiveCashierTabSnapshot() : tab))
+      .filter((tab) => tab.id !== tabId);
+    if (remainingTabs.length === 0) {
+      const freshTab = {
+        id: `cashier-tab-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        user: null,
+        shiftId: null,
+        cart: [],
+        selectedCustomer: null,
+        selectedTransactionDate: formatDateInput(new Date()),
+        discountType: 'percent',
+        discountValue: '0',
+        payMethod: 'Tunai',
+        cashAmount: '',
+        activeTab: 'pos',
+      };
+      setCashierTabs([freshTab]);
+      loadCashierTab(freshTab);
+      return;
+    }
+
+    setCashierTabs(remainingTabs);
+    if (tabId === activeCashierTabId) loadCashierTab(remainingTabs[remainingTabs.length - 1]);
+  };
+
+  useEffect(() => {
+    setCashierTabs((tabs) => tabs.map((tab) => (
+      tab.id === activeCashierTabId ? getActiveCashierTabSnapshot() : tab
+    )));
+  }, [
+    activeCashierTabId,
+    currentUser,
+    activeShiftId,
+    cart,
+    selectedCustomer,
+    selectedTransactionDate,
+    discountType,
+    discountValue,
+    payMethod,
+    cashAmount,
+    activeTab,
+  ]);
+
+  const cashierTabBar = (
+    <View style={styles.cashierTabsBar}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cashierTabsScroll}>
+        {cashierTabs.map((tab) => {
+          const isActive = tab.id === activeCashierTabId;
+          const itemCount = tab.id === activeCashierTabId
+            ? totalCartCount
+            : (tab.cart || []).reduce((sum, item) => sum + item.qty, 0);
+          return (
+            <View key={tab.id} style={[styles.cashierTab, isActive && styles.cashierTabActive]}>
+              <TouchableOpacity style={styles.cashierTabSelect} onPress={() => switchCashierTab(tab.id)}>
+                <MaterialCommunityIcons
+                  name={tab.user ? 'point-of-sale' : 'account-plus-outline'}
+                  size={15}
+                  color={isActive ? '#10b981' : '#94a3b8'}
+                />
+                <Text numberOfLines={1} style={[styles.cashierTabText, isActive && styles.cashierTabTextActive]}>
+                  {tab.user?.name || 'Kasir baru'}
+                </Text>
+                {itemCount > 0 && <Text style={styles.cashierTabCount}>{itemCount}</Text>}
+              </TouchableOpacity>
+              {tab.isClosable && cashierTabs.length > 1 && (
+                <TouchableOpacity
+                  style={styles.cashierTabClose}
+                  onPress={() => closeCashierTab(tab.id)}
+                  accessibilityLabel="Tutup tab kasir"
+                >
+                  <Feather name="x" size={13} color="#94a3b8" />
+                </TouchableOpacity>
+              )}
+            </View>
+          );
+        })}
+      </ScrollView>
+      <TouchableOpacity
+        style={styles.cashierTabAdd}
+        onPress={openCashierTab}
+        accessibilityLabel="Buka tab kasir baru"
+      >
+        <Feather name="plus" size={17} color="#10b981" />
+      </TouchableOpacity>
+    </View>
+  );
 
   // Loading Screen
   if (isLoading) {
@@ -2477,15 +3484,24 @@ export default function App() {
   }
 
   if (!currentUser) {
+    const kasirNames = users.map((u) => u.name).join(', ');
     return (
       <SafeAreaView style={styles.loginContainer}>
         <ExpoStatusBar style="light" />
+        <View style={styles.loginCashierTabs}>{cashierTabBar}</View>
+        <ScrollView
+          contentContainerStyle={styles.loginScrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
         <View style={styles.loginCard}>
           <View style={styles.loginLogo}>
             <MaterialCommunityIcons name="store" size={34} color="#fff" />
           </View>
           <Text style={styles.loginTitle}>Tipsy Point</Text>
-          <Text style={styles.loginSubtitle}>Masuk sebagai kasir untuk melanjutkan</Text>
+          <Text style={styles.loginSubtitle}>
+            Masuk sebagai kasir untuk {cashierTabs.find((tab) => tab.id === activeCashierTabId)?.user ? 'melanjutkan sesi' : 'membuka tab kasir ini'}
+          </Text>
           <TextInput
             style={styles.loginInput}
             placeholder="Username"
@@ -2507,8 +3523,75 @@ export default function App() {
           <TouchableOpacity style={styles.loginButton} onPress={handleLogin}>
             <Text style={styles.loginButtonText}>Masuk</Text>
           </TouchableOpacity>
-          <Text style={styles.loginHint}>Akun tersedia: mei dan renal</Text>
+          <TouchableOpacity
+            style={styles.loginAddKasirBtn}
+            onPress={() => { setAddKasirError(''); setIsAddKasirLoginOpen(true); }}
+          >
+            <Feather name="user-plus" size={14} color="#10b981" />
+            <Text style={styles.loginAddKasirText}>Tambah Kasir Baru</Text>
+          </TouchableOpacity>
+          {kasirNames ? <Text style={styles.loginHint}>Kasir terdaftar: {kasirNames}</Text> : null}
         </View>
+
+        {/* Modal Tambah Kasir */}
+        <Modal visible={isAddKasirLoginOpen} transparent animationType="slide" onRequestClose={() => setIsAddKasirLoginOpen(false)}>
+          <View style={styles.loginModalOverlay}>
+            <View style={styles.loginModalCard}>
+              <View style={styles.loginModalHeader}>
+                <Text style={styles.loginModalTitle}>Tambah Kasir Baru</Text>
+                <TouchableOpacity onPress={() => setIsAddKasirLoginOpen(false)}>
+                  <Feather name="x" size={20} color="#94a3b8" />
+                </TouchableOpacity>
+              </View>
+              <Text style={styles.loginModalLabel}>Nama Lengkap</Text>
+              <TextInput
+                style={styles.loginInput}
+                placeholder="Contoh: Siti Rahma"
+                placeholderTextColor="#64748b"
+                value={addKasirName}
+                onChangeText={(t) => { setAddKasirName(t); setAddKasirError(''); }}
+              />
+              <Text style={styles.loginModalLabel}>Username</Text>
+              <TextInput
+                style={styles.loginInput}
+                placeholder="Contoh: siti"
+                placeholderTextColor="#64748b"
+                autoCapitalize="none"
+                value={addKasirUsername}
+                onChangeText={(t) => { setAddKasirUsername(t); setAddKasirError(''); }}
+              />
+              <Text style={styles.loginModalLabel}>Sandi</Text>
+              <TextInput
+                style={styles.loginInput}
+                placeholder="Minimal 6 karakter"
+                placeholderTextColor="#64748b"
+                secureTextEntry
+                value={addKasirPassword}
+                onChangeText={(t) => { setAddKasirPassword(t); setAddKasirError(''); }}
+              />
+              <Text style={styles.loginModalLabel}>Konfirmasi Sandi</Text>
+              <TextInput
+                style={styles.loginInput}
+                placeholder="Ulangi sandi"
+                placeholderTextColor="#64748b"
+                secureTextEntry
+                value={addKasirConfirm}
+                onChangeText={(t) => { setAddKasirConfirm(t); setAddKasirError(''); }}
+              />
+              {!!addKasirError && <Text style={styles.loginError}>{addKasirError}</Text>}
+              <View style={styles.loginModalActions}>
+                <TouchableOpacity style={styles.loginModalCancel} onPress={() => setIsAddKasirLoginOpen(false)}>
+                  <Text style={styles.loginModalCancelText}>Batal</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.loginModalSubmit} onPress={handleAddKasirFromLogin}>
+                  <Feather name="user-plus" size={14} color="#fff" />
+                  <Text style={styles.loginModalSubmitText}>Tambah Kasir</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -2517,7 +3600,7 @@ export default function App() {
     <SafeAreaView style={styles.container}>
       <ExpoStatusBar style="light" />
       {/* Top Mobile Header */}
-      <View style={styles.header}>
+      <View style={styles.header} className={Platform.OS === 'web' ? 'app-header' : undefined}>
         <View style={styles.headerTitleRow}>
           <View style={styles.logoBadge}>
             <MaterialCommunityIcons name="store" size={20} color="#fff" />
@@ -2525,15 +3608,31 @@ export default function App() {
           <Text style={styles.headerTitle}><Text style={styles.headerTitleAccent}>Tipsy Point</Text></Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.userBadge}
-          onPress={() => setIsUserSwitchOpen(true)}
-        >
-          <MaterialCommunityIcons name="account-circle" size={18} color="#10b981" />
-          <Text style={styles.userBadgeText}>{currentUser?.name || 'Belum login'}</Text>
-          <Feather name="chevron-down" size={14} color="#94a3b8" />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity
+            style={styles.userBadge}
+            className={Platform.OS === 'web' ? 'app-user-badge' : undefined}
+            onPress={() => setIsUserSwitchOpen(true)}
+          >
+            <MaterialCommunityIcons name="account-circle" size={18} color="#10b981" />
+            <Text
+              style={styles.userBadgeText}
+              className={Platform.OS === 'web' ? 'app-user-name' : undefined}
+            >
+              {currentUser?.name || 'Belum login'}
+            </Text>
+            <Feather name="chevron-down" size={14} color="#94a3b8" />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.cashierNewTabButton}
+            onPress={openCashierTab}
+            accessibilityLabel="Buka tab kasir baru"
+          >
+            <Feather name="plus" size={20} color="#fff" />
+          </TouchableOpacity>
+        </View>
       </View>
+      {cashierTabBar}
 
       {activeTab === 'dashboard' && (
         <View style={styles.filterBar}>
@@ -2561,7 +3660,7 @@ export default function App() {
       {/* Main Tab Workspace */}
       <View style={styles.workspace}>
         {activeTab === 'dashboard' && (
-          <ScrollView style={styles.tabContent} contentContainerStyle={{ paddingBottom: 100 }}>
+          <ScrollView style={styles.tabContent} contentContainerStyle={{ paddingBottom: CONTENT_BOTTOM_PADDING }}>
             {/* Net Profit Banner */}
             <View
               style={[
@@ -2645,18 +3744,36 @@ export default function App() {
 
             {/* Product Cards List */}
             <FlatList
+              key={`pos-products-${productColumns}`}
               data={filteredPosProducts}
               keyExtractor={(item) => item.id}
-              numColumns={2}
-              contentContainerStyle={{ padding: 12, paddingBottom: 100 }}
+              numColumns={productColumns}
+              contentContainerStyle={{ padding: 12, paddingBottom: CONTENT_BOTTOM_PADDING }}
               renderItem={({ item }) => {
                 const cartItem = cart.find((c) => c.productId === item.id);
                 return (
-                  <View style={styles.productCard}>
+                  <View style={[styles.productCard, productColumns === 1 && styles.productCardSingleColumn]}>
                     <Image source={{ uri: item.image }} style={styles.productImage} />
                     <View style={styles.productBody}>
                       <Text style={styles.productName} numberOfLines={2}>{item.name}</Text>
+                      {item.isPromotion && (
+                        <View style={styles.promoCardBadge}>
+                          <MaterialCommunityIcons name="tag-outline" size={12} color="#fbbf24" />
+                          <Text style={styles.promoCardBadgeText}>PROMO PAKET</Text>
+                        </View>
+                      )}
                       <Text style={styles.productPrice}>{formatRp(item.price)}</Text>
+                      {item.isPromotion && (
+                        <>
+                          <Text style={styles.promoRegularPrice}>Harga normal {formatRp(item.regularPrice)}</Text>
+                          <Text style={styles.promoComponents} numberOfLines={2}>
+                            {(item.promotionItems || []).map((component) => {
+                              const componentProduct = products.find((product) => product.id === component.productId);
+                              return `${componentProduct?.name || 'Barang'} x${component.qty}`;
+                            }).join(' + ')}
+                          </Text>
+                        </>
+                      )}
                       <View style={styles.productMeta}>
                         <Text style={[styles.productStock, item.stock < 10 && { color: '#ef4444' }]}>
                           Stok: {item.stock}
@@ -2715,7 +3832,7 @@ export default function App() {
             <FlatList
               data={filteredCrudProducts}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+              contentContainerStyle={{ padding: 16, paddingBottom: CONTENT_BOTTOM_PADDING }}
               renderItem={({ item }) => {
                 const margin = item.price - item.hpp;
                 return (
@@ -2747,24 +3864,78 @@ export default function App() {
 
         {activeTab === 'mutation' && (
           <View style={styles.tabContent}>
-            <View style={styles.mutationTopBar}>
-              <TouchableOpacity style={[styles.mutActionBtn, { backgroundColor: '#0284c7' }]} onPress={() => setIsMutationModalOpen(true)}>
-                <Feather name="plus-circle" size={16} color="#fff" />
-                <Text style={styles.mutActionBtnText}>Catat Mutasi</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[styles.mutActionBtn, { backgroundColor: '#7c3aed' }]} onPress={() => setIsStockCorrectionOpen(true)}>
-                <Feather name="check-square" size={16} color="#fff" />
-                <Text style={styles.mutActionBtnText}>Stock Opname</Text>
-              </TouchableOpacity>
-            </View>
-
             <FlatList
-              data={mutations}
+              data={filteredStockHistory}
               keyExtractor={(item) => item.id}
-              contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
+              contentContainerStyle={{ padding: 16, paddingBottom: CONTENT_BOTTOM_PADDING, flexGrow: 1 }}
+              ListHeaderComponent={(
+                <View>
+                  <Text style={styles.stockHistoryTitle}>Riwayat Stok</Text>
+                  <Text style={styles.stockHistorySubtitle}>Pantau barang restock, terjual, dan keluar lainnya.</Text>
+
+                  <View style={styles.stockSummaryRow}>
+                    <View style={[styles.stockSummaryCard, styles.stockSummaryIn]}>
+                      <MaterialCommunityIcons name="package-down" size={20} color="#34d399" />
+                      <Text style={styles.stockSummaryLabel}>BARANG DIRESTOCK</Text>
+                      <Text style={styles.stockSummaryValue}>+{stockHistoryTotals.restocked} unit</Text>
+                    </View>
+                    <View style={[styles.stockSummaryCard, styles.stockSummaryOut]}>
+                      <MaterialCommunityIcons name="package-up" size={20} color="#f87171" />
+                      <Text style={styles.stockSummaryLabel}>BARANG KELUAR</Text>
+                      <Text style={styles.stockSummaryValue}>-{stockHistoryTotals.removed} unit</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.mutationTopBar}>
+                    <TouchableOpacity style={[styles.mutActionBtn, { backgroundColor: '#0284c7' }]} onPress={() => setIsMutationModalOpen(true)}>
+                      <Feather name="plus-circle" size={16} color="#fff" />
+                      <Text style={styles.mutActionBtnText}>Catat Mutasi</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={[styles.mutActionBtn, { backgroundColor: '#7c3aed' }]} onPress={() => setIsStockCorrectionOpen(true)}>
+                      <Feather name="check-square" size={16} color="#fff" />
+                      <Text style={styles.mutActionBtnText}>Stock Opname</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.stockHistoryFilters}>
+                    {[
+                      { id: 'all', label: 'Semua' },
+                      { id: 'in', label: 'Restock' },
+                      { id: 'out', label: 'Barang Keluar' },
+                      { id: 'koreksi', label: 'Opname' },
+                    ].map((filter) => (
+                      <TouchableOpacity
+                        key={filter.id}
+                        style={[styles.stockHistoryFilter, stockHistoryFilter === filter.id && styles.stockHistoryFilterActive]}
+                        onPress={() => setStockHistoryFilter(filter.id)}
+                      >
+                        <Text style={[styles.stockHistoryFilterText, stockHistoryFilter === filter.id && styles.stockHistoryFilterTextActive]}>
+                          {filter.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+              ListEmptyComponent={(
+                <View style={styles.stockHistoryEmpty}>
+                  <MaterialCommunityIcons name="clipboard-text-clock-outline" size={28} color="#64748b" />
+                  <Text style={styles.stockHistoryEmptyText}>Belum ada riwayat untuk kategori ini.</Text>
+                </View>
+              )}
               renderItem={({ item }) => {
-                const prod = products.find((p) => p.id === item.productId);
+                const quantity = Number(item.qty) || 0;
+                const quantityLabel = item.type === 'in'
+                  ? `+${Math.abs(quantity)}`
+                  : item.type === 'out'
+                    ? `-${Math.abs(quantity)}`
+                    : `${quantity > 0 ? '+' : ''}${quantity}`;
+                const badgeLabel = item.type === 'in'
+                  ? 'RESTOCK'
+                  : item.type === 'out'
+                    ? item.source === 'sale' ? 'TERJUAL' : 'KELUAR'
+                    : 'OPNAME';
                 return (
                   <View style={styles.mutationCard}>
                     <View style={styles.mutCardHeader}>
@@ -2773,12 +3944,15 @@ export default function App() {
                         styles.mutBadge,
                         item.type === 'in' ? styles.mutBadgeIn : item.type === 'out' ? styles.mutBadgeOut : styles.mutBadgeKoreksi
                       ]}>
-                        {item.type === 'in' ? '+ Masuk' : item.type === 'out' ? '- Keluar' : '⚙ Opname'}
+                        {badgeLabel}
                       </Text>
                     </View>
-                    <Text style={styles.mutProdName}>{prod ? prod.name : item.productId}</Text>
+                    <Text style={styles.mutProdName}>{item.productName}</Text>
                     <Text style={styles.mutQtyText}>
-                      Jumlah: <Text style={{ fontWeight: 'bold' }}>{item.qty > 0 ? '+' : ''}{item.qty} unit</Text>
+                      Jumlah: <Text style={{ fontWeight: 'bold' }}>{quantityLabel} unit</Text>
+                    </Text>
+                    <Text style={styles.stockHistoryDate}>
+                      {item.date ? new Date(item.date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Tanggal tidak tersedia'}
                     </Text>
                     <Text style={styles.mutNote}>{item.note}</Text>
                   </View>
@@ -2789,7 +3963,7 @@ export default function App() {
         )}
 
         {activeTab === 'reports' && (
-          <ScrollView style={styles.tabContent} contentContainerStyle={{ padding: 16, paddingBottom: 100 }}>
+          <ScrollView style={styles.tabContent} contentContainerStyle={{ padding: 16, paddingBottom: CONTENT_BOTTOM_PADDING }}>
             <View style={styles.reportToolbar}>
               <Text style={styles.sectionTitle}>Laporan Keuangan</Text>
               <View style={styles.reportPeriodRow}>
@@ -2808,19 +3982,32 @@ export default function App() {
               </View>
               <Text style={styles.reportPeriodLabel}>{reportData.periodLabel}</Text>
               <View style={styles.reportDownloadRow}>
-                <TouchableOpacity style={[styles.reportDownloadBtn, { backgroundColor: '#047857' }]} onPress={downloadFinancialPdf}>
+                <TouchableOpacity
+                  style={[styles.reportDownloadBtn, styles.reportDownloadBtnFinancial, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                  onPress={() => runPdfExport(downloadFinancialPdf)}
+                  disabled={!pdfModulesReady || pdfExporting}
+                >
                   <Feather name="file-text" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>Buat PDF Lengkap</Text>
+                  <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'Buat PDF Lengkap'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.reportDownloadBtn} onPress={downloadSalesReport}>
+                <TouchableOpacity
+                  style={[styles.reportDownloadBtn, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                  onPress={() => runPdfExport(downloadSalesReport)}
+                  disabled={!pdfModulesReady || pdfExporting}
+                >
                   <Feather name="download" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>CSV Penjualan</Text>
+                  <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Penjualan'}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.reportDownloadBtn, { backgroundColor: '#7c3aed' }]} onPress={downloadStockReport}>
+                <TouchableOpacity
+                  style={[styles.reportDownloadBtn, styles.reportDownloadBtnStock, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                  onPress={() => runPdfExport(downloadStockReport)}
+                  disabled={!pdfModulesReady || pdfExporting}
+                >
                   <Feather name="download" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>CSV Stok</Text>
+                  <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Stok'}</Text>
                 </TouchableOpacity>
               </View>
+              {!!pdfExportStatus && <Text style={styles.reportPdfStatus}>{pdfExportStatus}</Text>}
             </View>
             <Text style={styles.reportHint}>PDF mengikuti periode terpilih dan berisi ringkasan keuangan, analisis produk, pembayaran, serta rincian transaksi.</Text>
 
@@ -2890,6 +4077,7 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={[styles.modalBox, { backgroundColor: '#fff', maxHeight: '94%', maxWidth: 440, alignItems: 'center' }]}>
             <ScrollView style={{ width: '100%' }} contentContainerStyle={{ paddingHorizontal: 4 }}>
+              <View ref={shiftReceiptCaptureRef} collapsable={false} style={{ backgroundColor: '#fff', paddingHorizontal: 4, width: '100%' }}>
               <View style={{ alignItems: 'center', borderBottomWidth: 1, borderColor: '#e5e7eb', paddingBottom: 14 }}>
                 <View style={{ width: 62, height: 62, borderRadius: 13, backgroundColor: '#08090c', alignItems: 'center', justifyContent: 'center', marginBottom: 10 }}>
                   <View style={{ position: 'absolute', width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: '#e84adc', borderRightColor: '#55e8ed' }} />
@@ -2966,6 +4154,7 @@ export default function App() {
                 </View>
               )) : <Text style={{ color: '#758092', paddingVertical: 8 }}>Tidak ada barang masuk pada shift ini.</Text>}
               <Text style={{ color: '#758092', fontStyle: 'italic', textAlign: 'center', marginTop: 14, marginBottom: 8 }}>Terima kasih atas kunjungan Anda</Text>
+              </View>
             </ScrollView>
 
             <TouchableOpacity
@@ -2974,6 +4163,13 @@ export default function App() {
             >
               <Feather name="printer" size={16} color="#fff" />
               <Text style={styles.receiptDoneBtnText}>Cetak Struk Shift</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.receiptDoneBtn, { backgroundColor: '#047857', marginBottom: 8 }]}
+              onPress={() => saveReceiptPng(shiftReceiptCaptureRef, `struk-shift-${closedShiftSummary?.shiftId || 'kasir'}.png`)}
+            >
+              <Feather name="image" size={16} color="#fff" />
+              <Text style={styles.receiptDoneBtnText}>Simpan PNG</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsShiftReceiptOpen(false)}>
               <Text style={styles.cancelBtnText}>Lanjut Shift</Text>
@@ -2990,16 +4186,35 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Ganti Akun Kasir</Text>
-              <TouchableOpacity onPress={() => setIsUserSwitchOpen(false)}>
+              <Text style={styles.modalTitle}>Akun Kasir</Text>
+              <TouchableOpacity onPress={() => {
+                setIsUserSwitchOpen(false);
+              }}>
                 <Feather name="x" size={20} color="#94a3b8" />
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.currentAccountText}>Login sebagai {currentUser?.name || 'Belum login'}</Text>
+            <Text style={styles.currentAccountText}>Login sebagai {currentUser?.name || 'Belum login'}.</Text>
             <TouchableOpacity style={styles.logoutBtn} onPress={handleCloseShift}>
               <Feather name="log-out" size={16} color="#fff" />
               <Text style={styles.addUserBtnText}>Tutup Shift & Buat Struk</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.logoutBtn, { marginTop: 10, backgroundColor: '#10b981' }]}
+              onPress={() => {
+                setIsUserSwitchOpen(false);
+                setAddKasirError('');
+                setIsAddKasirLoginOpen(true);
+              }}
+            >
+              <Feather name="user-plus" size={16} color="#fff" />
+              <Text style={styles.addUserBtnText}>Tambah Kasir Baru</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.cancelBtn, { marginTop: 10 }]}
+              onPress={() => setIsUserSwitchOpen(false)}
+            >
+              <Text style={styles.cancelBtnText}>Kembali</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -3016,7 +4231,16 @@ export default function App() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ flex: 1 }}>
+            <ScrollView
+              style={{ flex: 1, minHeight: 0 }}
+              contentContainerStyle={{ paddingBottom: 8 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {cart.length === 0 && (
+                <Text style={{ color: '#94a3b8', paddingVertical: 16, textAlign: 'center' }}>
+                  Belum ada barang di keranjang.
+                </Text>
+              )}
               {cart.map((item) => {
                 const p = products.find((prod) => prod.id === item.productId);
                 if (!p) return null;
@@ -3024,6 +4248,10 @@ export default function App() {
                   <View key={item.productId} style={styles.cartRow}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.cartProdName}>{p.name}</Text>
+                      {p.isPromotion && <Text style={styles.promoComponents}>{(p.promotionItems || []).map((component) => {
+                        const componentProduct = products.find((product) => product.id === component.productId);
+                        return `${componentProduct?.name || 'Barang'} x${component.qty}`;
+                      }).join(' + ')}</Text>}
                       <Text style={styles.cartProdPrice}>{formatRp(p.price)}</Text>
                     </View>
 
@@ -3039,18 +4267,28 @@ export default function App() {
                   </View>
                 );
               })}
-            </ScrollView>
-
             <View style={styles.cartSummary}>
-              <View style={styles.cartCustomerDateRow}>
+              <View style={styles.cartCashierField}>
+                <Text style={styles.cartFieldLabel}>Kasir</Text>
+                <View style={styles.cartCashierValue}>
+                  <MaterialCommunityIcons name="account-circle" size={16} color="#10b981" />
+                  <Text style={styles.customerSelectText} numberOfLines={1}>
+                    {currentUser?.name || 'Belum login'}
+                  </Text>
+                </View>
+              </View>
+              <View
+                style={styles.cartCustomerDateRow}
+                className={Platform.OS === 'web' ? 'app-cart-customer-date-row' : undefined}
+              >
                 <View style={styles.cartCustomerField}>
-                  <Text style={styles.cartFieldLabel}>Kasir</Text>
+                  <Text style={styles.cartFieldLabel}>Pelanggan</Text>
                   <View style={styles.customerSelectRow}>
                     <TouchableOpacity
                       style={styles.customerSelectButton}
                       onPress={() => setShowCustomerOptions((visible) => !visible)}
                     >
-                      <Text style={styles.customerSelectText} numberOfLines={1}>{selectedCustomer?.name || 'Kasir'}</Text>
+                      <Text style={styles.customerSelectText} numberOfLines={1}>{selectedCustomer?.name || 'Pelanggan Umum'}</Text>
                       <Feather name="chevron-down" size={15} color="#94a3b8" />
                     </TouchableOpacity>
                     <TouchableOpacity
@@ -3059,7 +4297,7 @@ export default function App() {
                         setShowCustomerOptions(true);
                         setIsAddingCustomer((visible) => !visible);
                       }}
-                      accessibilityLabel="Tambah Kasir baru"
+                      accessibilityLabel="Tambah pelanggan baru"
                     >
                       <Feather name={isAddingCustomer ? 'x' : 'user-plus'} size={16} color="#fff" />
                     </TouchableOpacity>
@@ -3106,8 +4344,8 @@ export default function App() {
                         setIsAddingCustomer(false);
                       }}
                     >
-                      <Text style={styles.customerOptionName}>Kasir</Text>
-                      <Text style={styles.customerOptionDetail}>Tanpa data Kasir</Text>
+                      <Text style={styles.customerOptionName}>Pelanggan Umum</Text>
+                      <Text style={styles.customerOptionDetail}>Tanpa data pelanggan</Text>
                     </TouchableOpacity>
                     {customers.map((customer) => (
                       <TouchableOpacity
@@ -3123,13 +4361,13 @@ export default function App() {
                         {!!customer.phone && <Text style={styles.customerOptionDetail}>{customer.phone}</Text>}
                       </TouchableOpacity>
                     ))}
-                    {!customers.length && <Text style={styles.customerOptionDetail}>Belum ada kasir tersimpan.</Text>}
+                    {!customers.length && <Text style={styles.customerOptionDetail}>Belum ada pelanggan tersimpan.</Text>}
                   </ScrollView>
                   {isAddingCustomer && (
                     <View style={styles.addCustomerForm}>
                       <TextInput
                         style={styles.customerInput}
-                        placeholder="Nama kasir"
+                        placeholder="Nama pelanggan"
                         placeholderTextColor="#64748b"
                         value={newCustomerName}
                         onChangeText={setNewCustomerName}
@@ -3144,7 +4382,7 @@ export default function App() {
                         onChangeText={setNewCustomerPhone}
                       />
                       <TouchableOpacity style={styles.saveCustomerButton} onPress={handleAddCustomer}>
-                        <Text style={styles.saveCustomerButtonText}>Simpan & Pilih Kasir</Text>
+                        <Text style={styles.saveCustomerButtonText}>Simpan & Pilih Pelanggan</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -3152,9 +4390,21 @@ export default function App() {
               )}
 
               <View style={styles.summaryRow}>
-                <Text style={styles.summaryLabel}>Subtotal</Text>
+                <Text style={styles.summaryLabel}>Subtotal normal</Text>
                 <Text style={styles.summaryVal}>{formatRp(cartCalculations.subtotal)}</Text>
               </View>
+              {cartCalculations.promotionDiscount > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Hemat paket promo</Text>
+                  <Text style={[styles.summaryVal, { color: '#34d399' }]}>- {formatRp(cartCalculations.promotionDiscount)}</Text>
+                </View>
+              )}
+              {cartCalculations.promotionDiscount > 0 && (
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Subtotal setelah promo</Text>
+                  <Text style={styles.summaryVal}>{formatRp(cartCalculations.discountedSubtotal)}</Text>
+                </View>
+              )}
 
               <View style={styles.discountSection}>
                 <View style={styles.discountHeader}>
@@ -3182,7 +4432,7 @@ export default function App() {
                   value={discountValue}
                   onChangeText={setDiscountValue}
                 />
-                <Text style={styles.discountApplied}>Potongan: {formatRp(cartCalculations.discountAmount)}</Text>
+                <Text style={styles.discountApplied}>Diskon tambahan: {formatRp(cartCalculations.discountAmount)}</Text>
               </View>
 
               <Text style={styles.paymentLabel}>Metode Pembayaran</Text>
@@ -3240,6 +4490,7 @@ export default function App() {
                 <Text style={styles.checkoutBtnText}>Bayar Now ({formatRp(cartCalculations.grandTotal)})</Text>
               </TouchableOpacity>
             </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -3247,24 +4498,106 @@ export default function App() {
       {/* Modal CRUD Product */}
       <Modal visible={isProductModalOpen} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>{editingProduct ? 'Edit Master Produk' : 'Tambah Produk Baru'}</Text>
+          <View style={[styles.modalBox, { maxHeight: '92%' }]}>
+            <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.productFormContent}>
+              <Text style={styles.modalTitle}>{editingProduct ? 'Edit Master Produk' : 'Tambah Produk Baru'}</Text>
 
-            <TextInput style={styles.modalInput} placeholder="Barcode SKU" placeholderTextColor="#64748b" value={prodBarcode} onChangeText={setProdBarcode} />
-            <TextInput style={styles.modalInput} placeholder="Nama Produk" placeholderTextColor="#64748b" value={prodName} onChangeText={setProdName} />
-            <TextInput style={styles.modalInput} placeholder="Kategori" placeholderTextColor="#64748b" value={prodCategory} onChangeText={setProdCategory} />
-            <TextInput style={styles.modalInput} placeholder="Stok Awal" keyboardType="numeric" placeholderTextColor="#64748b" value={prodStock} onChangeText={setProdStock} />
-            <TextInput style={styles.modalInput} placeholder="Modal HPP (Rp)" keyboardType="numeric" placeholderTextColor="#64748b" value={prodHpp} onChangeText={setProdHpp} />
-            <TextInput style={styles.modalInput} placeholder="Harga Jual (Rp)" keyboardType="numeric" placeholderTextColor="#64748b" value={prodPrice} onChangeText={setProdPrice} />
+              <TextInput style={styles.modalInput} placeholder="Nama Produk" placeholderTextColor="#64748b" value={prodName} onChangeText={setProdName} />
+              <View style={styles.promotionToggleRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.promotionToggleTitle}>Barang Promosi</Text>
+                  <Text style={styles.promotionToggleHint}>Gabungkan beberapa produk menjadi satu paket diskon</Text>
+                </View>
+                <Switch
+                  value={isPromotionProduct}
+                  onValueChange={(enabled) => {
+                    setIsPromotionProduct(enabled);
+                    setProdCategory(enabled ? 'Promo' : 'Anggur & Wine');
+                    if (enabled) setPromotionItems([]);
+                  }}
+                  trackColor={{ false: '#475569', true: '#047857' }}
+                  thumbColor={isPromotionProduct ? '#d1fae5' : '#e2e8f0'}
+                />
+              </View>
 
-            <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsProductModalOpen(false)}>
-                <Text style={styles.cancelBtnText}>Batal</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.saveModalBtn} onPress={saveProduct}>
-                <Text style={styles.saveModalBtnText}>Simpan Produk</Text>
-              </TouchableOpacity>
-            </View>
+              {isPromotionProduct ? (
+                <View style={styles.promotionEditor}>
+                  <Text style={styles.promotionSectionTitle}>Pilih Isi Paket</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="Cari nama barang atau barcode"
+                    placeholderTextColor="#64748b"
+                    value={promotionSearch}
+                    onChangeText={setPromotionSearch}
+                  />
+                  <ScrollView style={styles.promotionProductList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+                    {availablePromotionProducts.map((product) => {
+                      const selected = promotionItems.find((item) => item.productId === product.id);
+                      return (
+                        <View key={product.id} style={styles.promotionProductRow}>
+                          <TouchableOpacity style={styles.promotionProductSelect} onPress={() => togglePromotionItem(product.id)}>
+                            <MaterialCommunityIcons
+                              name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'}
+                              size={19}
+                              color={selected ? '#10b981' : '#64748b'}
+                            />
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.promotionProductName}>{product.name}</Text>
+                              <Text style={styles.promotionProductMeta}>{formatRp(product.price)} | Stok {product.stock}</Text>
+                            </View>
+                          </TouchableOpacity>
+                          {selected && (
+                            <View style={styles.promotionQtyControl}>
+                              <TouchableOpacity onPress={() => updatePromotionItemQty(product.id, -1)} style={styles.promotionQtyButton}>
+                                <Text style={styles.promotionQtyButtonText}>-</Text>
+                              </TouchableOpacity>
+                              <Text style={styles.promotionQtyValue}>{selected.qty}</Text>
+                              <TouchableOpacity onPress={() => updatePromotionItemQty(product.id, 1)} style={styles.promotionQtyButton}>
+                                <Text style={styles.promotionQtyButtonText}>+</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+                    {!availablePromotionProducts.length && <Text style={styles.promotionProductMeta}>Barang tidak ditemukan.</Text>}
+                  </ScrollView>
+                  <View style={styles.promotionPriceSummary}>
+                    <Text style={styles.promotionPriceLabel}>Harga normal paket</Text>
+                    <Text style={styles.promotionPriceValue}>{formatRp(promotionRegularPrice)}</Text>
+                  </View>
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder="Harga promo (Rp)"
+                    keyboardType="numeric"
+                    placeholderTextColor="#64748b"
+                    value={prodPrice}
+                    onChangeText={setProdPrice}
+                  />
+                  {!!promotionItems.length && Number(prodPrice) > 0 && Number(prodPrice) < promotionRegularPrice && (
+                    <Text style={styles.promotionSavingText}>Pelanggan hemat {formatRp(promotionRegularPrice - Number(prodPrice))}</Text>
+                  )}
+                  <Text style={styles.promotionStockNote}>Stok paket mengikuti jumlah stok paling sedikit dari barang penyusunnya.</Text>
+                </View>
+              ) : (
+                <>
+                  <TextInput style={styles.modalInput} placeholder="Barcode SKU" placeholderTextColor="#64748b" value={prodBarcode} onChangeText={setProdBarcode} />
+                  <TextInput style={styles.modalInput} placeholder="Kategori" placeholderTextColor="#64748b" value={prodCategory} onChangeText={setProdCategory} />
+                  <TextInput style={styles.modalInput} placeholder="Stok Awal" keyboardType="numeric" placeholderTextColor="#64748b" value={prodStock} onChangeText={setProdStock} />
+                  <TextInput style={styles.modalInput} placeholder="Modal HPP (Rp)" keyboardType="numeric" placeholderTextColor="#64748b" value={prodHpp} onChangeText={setProdHpp} />
+                  <TextInput style={styles.modalInput} placeholder="Harga Jual (Rp)" keyboardType="numeric" placeholderTextColor="#64748b" value={prodPrice} onChangeText={setProdPrice} />
+                </>
+              )}
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsProductModalOpen(false)}>
+                  <Text style={styles.cancelBtnText}>Batal</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.saveModalBtn} onPress={saveProduct}>
+                  <Text style={styles.saveModalBtnText}>{isPromotionProduct ? 'Simpan Barang Promosi' : 'Simpan Produk'}</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -3314,13 +4647,14 @@ export default function App() {
         <View style={styles.modalOverlay}>
           <View style={[styles.modalBox, { alignItems: 'center', backgroundColor: '#fff', maxHeight: '92%', maxWidth: 440 }]}>
             <ScrollView style={{ width: '100%' }} contentContainerStyle={{ paddingHorizontal: 4 }}>
+              <View ref={salesReceiptCaptureRef} collapsable={false} style={{ backgroundColor: '#fff', paddingHorizontal: 4, width: '100%' }}>
               <View style={{ alignItems: 'center', borderBottomWidth: 1, borderColor: '#e5e7eb', paddingBottom: 14 }}>
                 <View style={{ width: 62, height: 62, borderRadius: 13, backgroundColor: '#08090c', alignItems: 'center', justifyContent: 'center', marginBottom: 10 }}>
                   <View style={{ position: 'absolute', width: 50, height: 50, borderRadius: 25, borderWidth: 2, borderColor: '#e84adc', borderRightColor: '#55e8ed' }} />
                   <Text style={{ color: '#fff', fontSize: 9, fontWeight: '700', textAlign: 'center' }}>Tipsy{'\n'}Point</Text>
                 </View>
                 <Text style={{ color: '#27313f', fontSize: 21, fontWeight: '700' }}>Tipsy Point</Text>
-                <Text style={{ color: '#758092', marginTop: 4 }}>Jalan Kepiting</Text>
+                <Text style={{ color: '#758092', marginTop: 4 }}>Jl. Kepiting No.60, Tukangkayu, Kec. Banyuwangi, Kabupaten Banyuwangi, Jawa Timur 68416</Text>
                 <Text style={{ color: '#758092', marginTop: 4 }}>Telp: 085196980785</Text>
               </View>
 
@@ -3344,17 +4678,28 @@ export default function App() {
                     <Text style={{ color: '#27313f', fontWeight: '600' }}>{formatRp(item.price * item.qty)}</Text>
                   </View>
                   <Text style={{ color: '#758092', fontSize: 12, marginTop: 4 }}>{item.qty} pcs x {formatRp(item.price)}</Text>
+                  {!!item.components?.length && (
+                    <Text style={{ color: '#758092', fontSize: 11, marginTop: 3 }}>
+                      Isi paket: {item.components.map((component) => `${component.name} x${component.qty}`).join(' + ')}
+                    </Text>
+                  )}
+                  {item.regularPrice > item.price && (
+                    <Text style={{ color: '#047857', fontSize: 11, marginTop: 3 }}>
+                      Hemat promo: {formatRp((item.regularPrice - item.price) * item.qty)}
+                    </Text>
+                  )}
                 </View>
               ))}
 
               <View style={{ borderTopWidth: 1, borderColor: '#e5e7eb', paddingTop: 8 }}>
                 {[
-                  ['Subtotal', formatRp(currentReceipt?.subtotal)],
-                  ['Diskon', `- ${formatRp(currentReceipt?.discountAmount)}`],
+                  ['Subtotal normal', formatRp(currentReceipt?.subtotal)],
+                  ['Hemat paket promo', `- ${formatRp(currentReceipt?.promotionDiscountAmount)}`],
+                  ['Diskon tambahan', `- ${formatRp(currentReceipt?.discountAmount)}`],
                 ].map(([label, value]) => (
                   <View key={label} style={{ flexDirection: 'row', justifyContent: 'space-between', marginVertical: 5 }}>
-                    <Text style={{ color: label === 'Diskon' ? '#d35d64' : '#758092' }}>{label}</Text>
-                    <Text style={{ color: label === 'Diskon' ? '#d35d64' : '#27313f' }}>{value}</Text>
+                    <Text style={{ color: label.includes('Hemat') || label.includes('Diskon') ? '#d35d64' : '#758092' }}>{label}</Text>
+                    <Text style={{ color: label.includes('Hemat') || label.includes('Diskon') ? '#d35d64' : '#27313f' }}>{value}</Text>
                   </View>
                 ))}
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderTopWidth: 1, borderColor: '#e5e7eb', paddingTop: 10, marginTop: 5 }}>
@@ -3380,11 +4725,19 @@ export default function App() {
                 </>}
               </View>
               <Text style={{ color: '#758092', fontStyle: 'italic', textAlign: 'center', marginTop: 14, marginBottom: 8 }}>Terima kasih atas kunjungan Anda</Text>
+              </View>
             </ScrollView>
 
             <TouchableOpacity style={[styles.receiptDoneBtn, { flexDirection: 'row', gap: 8, marginTop: 10 }]} onPress={printCurrentReceipt}>
               <Feather name="printer" size={16} color="#fff" />
               <Text style={styles.receiptDoneBtnText}>Cetak Struk</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.receiptDoneBtn, { flexDirection: 'row', gap: 8, marginTop: 8, backgroundColor: '#047857' }]}
+              onPress={() => saveReceiptPng(salesReceiptCaptureRef, `struk-penjualan-${currentReceipt?.id || 'transaksi'}.png`)}
+            >
+              <Feather name="image" size={16} color="#fff" />
+              <Text style={styles.receiptDoneBtnText}>Simpan PNG</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.receiptDoneBtn, { marginTop: 8, backgroundColor: '#27313f' }]} onPress={() => setIsReceiptModalOpen(false)}>
               <Text style={styles.receiptDoneBtnText}>Selesai & Transaksi Baru</Text>
@@ -3394,12 +4747,12 @@ export default function App() {
       </Modal>
 
       {/* Bottom Mobile Tab Bar */}
-      <View style={styles.bottomNav}>
+      <View style={styles.bottomNav} className={Platform.OS === 'web' ? 'app-bottom-nav' : undefined}>
         {[
           { id: 'pos', label: 'Kasir', icon: 'cart-outline' },
           { id: 'dashboard', label: 'Dashboard', icon: 'view-dashboard-outline' },
           { id: 'crud', label: 'Produk', icon: 'package-variant-closed' },
-          { id: 'mutation', label: 'Mutasi', icon: 'swap-horizontal' },
+          { id: 'mutation', label: 'Stok', icon: 'swap-horizontal' },
           { id: 'reports', label: 'Laporan', icon: 'file-document-outline' },
         ].map((tab) => (
           <TouchableOpacity
@@ -3412,7 +4765,10 @@ export default function App() {
               size={22}
               color={activeTab === tab.id ? '#10b981' : '#64748b'}
             />
-            <Text style={[styles.navText, activeTab === tab.id && styles.navTextActive]}>
+            <Text
+              style={[styles.navText, activeTab === tab.id && styles.navTextActive]}
+              className={Platform.OS === 'web' ? 'app-nav-item-text' : undefined}
+            >
               {tab.label}
             </Text>
           </TouchableOpacity>
@@ -3426,9 +4782,21 @@ const styles = StyleSheet.create({
   loginContainer: {
     flex: 1,
     backgroundColor: '#0f172a',
+  },
+  loginScrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
+    paddingTop: 80,
+  },
+  loginCashierTabs: {
+    position: 'absolute',
+    top: 8,
+    left: 12,
+    right: 12,
+    alignSelf: 'center',
+    maxWidth: 720,
   },
   loginCard: {
     width: '100%',
@@ -3493,12 +4861,93 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 11,
     textAlign: 'center',
-    marginTop: 16,
+    marginTop: 10,
+  },
+  loginAddKasirBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#10b981',
+  },
+  loginAddKasirText: {
+    color: '#10b981',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  loginModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'flex-end',
+  },
+  loginModalCard: {
+    backgroundColor: '#1e293b',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 24,
+    borderTopWidth: 1,
+    borderColor: '#334155',
+  },
+  loginModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 18,
+  },
+  loginModalTitle: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  loginModalLabel: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 4,
+    marginTop: 2,
+  },
+  loginModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+  },
+  loginModalCancel: {
+    flex: 1,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#475569',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loginModalCancelText: {
+    color: '#94a3b8',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  loginModalSubmit: {
+    flex: 2,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#10b981',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  loginModalSubmitText: {
+    color: '#fff',
+    fontWeight: '800',
+    fontSize: 13,
   },
   container: {
     flex: 1,
     backgroundColor: '#0f172a',
-    paddingTop: StatusBar.currentHeight || 0,
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight || 0 : 0,
   },
   header: {
     height: 56,
@@ -3509,6 +4958,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#334155',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   headerTitleRow: {
     flexDirection: 'row',
@@ -3545,6 +4999,85 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginHorizontal: 6,
   },
+  cashierNewTabButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#059669',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cashierTabsBar: {
+    height: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#111827',
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+  },
+  cashierTabsScroll: {
+    flexGrow: 1,
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    gap: 6,
+  },
+  cashierTab: {
+    maxWidth: 190,
+    minWidth: 112,
+    height: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#273449',
+    backgroundColor: '#182335',
+  },
+  cashierTabActive: {
+    backgroundColor: '#1e293b',
+    borderColor: '#10b981',
+  },
+  cashierTabSelect: {
+    flex: 1,
+    minWidth: 0,
+    height: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingLeft: 9,
+  },
+  cashierTabText: {
+    flexShrink: 1,
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  cashierTabTextActive: {
+    color: '#f8fafc',
+  },
+  cashierTabCount: {
+    overflow: 'hidden',
+    color: '#fff',
+    backgroundColor: '#059669',
+    borderRadius: 8,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  cashierTabClose: {
+    width: 28,
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cashierTabAdd: {
+    width: 42,
+    height: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderLeftWidth: 1,
+    borderLeftColor: '#273449',
+  },
   filterBar: {
     backgroundColor: '#1e293b',
     paddingVertical: 8,
@@ -3575,9 +5108,11 @@ const styles = StyleSheet.create({
   },
   workspace: {
     flex: 1,
+    minHeight: 0,
   },
   tabContent: {
     flex: 1,
+    minHeight: 0,
   },
   profitCard: {
     margin: 16,
@@ -3689,6 +5224,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
+  productCardSingleColumn: {
+    flexBasis: '100%',
+  },
   productImage: {
     width: '100%',
     height: 100,
@@ -3708,6 +5246,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
     marginVertical: 2,
+  },
+  promoCardBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginTop: 2,
+  },
+  promoCardBadgeText: {
+    color: '#fbbf24',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  promoRegularPrice: {
+    color: '#94a3b8',
+    fontSize: 9,
+    textDecorationLine: 'line-through',
+  },
+  promoComponents: {
+    color: '#cbd5e1',
+    fontSize: 9,
+    minHeight: 22,
+    marginTop: 3,
   },
   productMeta: {
     flexDirection: 'row',
@@ -3830,6 +5391,93 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     padding: 16,
     gap: 8,
+  },
+  stockHistoryTitle: {
+    color: '#f8fafc',
+    fontSize: 20,
+    fontWeight: '800',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  stockHistorySubtitle: {
+    color: '#94a3b8',
+    fontSize: 12,
+    paddingHorizontal: 16,
+    marginTop: 4,
+  },
+  stockSummaryRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 16,
+  },
+  stockSummaryCard: {
+    flex: 1,
+    minHeight: 116,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'space-between',
+  },
+  stockSummaryIn: {
+    backgroundColor: '#102d2a',
+    borderColor: '#14532d',
+  },
+  stockSummaryOut: {
+    backgroundColor: '#321e26',
+    borderColor: '#7f1d1d',
+  },
+  stockSummaryLabel: {
+    color: '#cbd5e1',
+    fontSize: 10,
+    fontWeight: '700',
+    marginTop: 8,
+  },
+  stockSummaryValue: {
+    color: '#f8fafc',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  stockHistoryFilters: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 8,
+  },
+  stockHistoryFilter: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    backgroundColor: '#1e293b',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  stockHistoryFilterActive: {
+    backgroundColor: '#065f46',
+    borderColor: '#10b981',
+  },
+  stockHistoryFilterText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  stockHistoryFilterTextActive: {
+    color: '#d1fae5',
+  },
+  stockHistoryDate: {
+    color: '#94a3b8',
+    fontSize: 10,
+    marginTop: 3,
+  },
+  stockHistoryEmpty: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 28,
+    gap: 8,
+  },
+  stockHistoryEmptyText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    textAlign: 'center',
   },
   mutActionBtn: {
     flex: 1,
@@ -3986,10 +5634,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
   },
+  reportDownloadBtnFinancial: {
+    backgroundColor: '#047857',
+  },
+  reportDownloadBtnStock: {
+    backgroundColor: '#7c3aed',
+  },
+  reportDownloadBtnDisabled: {
+    opacity: 0.55,
+  },
   reportDownloadText: {
     color: '#fff',
     fontSize: 11,
     fontWeight: '700',
+  },
+  reportPdfStatus: {
+    color: '#cbd5e1',
+    fontSize: 11,
   },
   reportHint: {
     color: '#64748b',
@@ -4090,6 +5751,124 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderWidth: 1,
     borderColor: '#334155',
+  },
+  productFormContent: {
+    paddingBottom: 8,
+  },
+  promotionToggleRow: {
+    minHeight: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    marginBottom: 12,
+  },
+  promotionToggleTitle: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  promotionToggleHint: {
+    color: '#64748b',
+    fontSize: 10,
+    marginTop: 3,
+  },
+  promotionEditor: {
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+  },
+  promotionSectionTitle: {
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  promotionProductList: {
+    maxHeight: 190,
+    marginBottom: 8,
+  },
+  promotionProductRow: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 5,
+    paddingVertical: 5,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  promotionProductSelect: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  promotionProductName: {
+    color: '#e2e8f0',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  promotionProductMeta: {
+    color: '#64748b',
+    fontSize: 9,
+    paddingVertical: 5,
+  },
+  promotionQtyControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderRadius: 7,
+  },
+  promotionQtyButton: {
+    width: 28,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  promotionQtyButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  promotionQtyValue: {
+    minWidth: 20,
+    color: '#fff',
+    textAlign: 'center',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  promotionPriceSummary: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+  },
+  promotionPriceLabel: {
+    color: '#94a3b8',
+    fontSize: 11,
+  },
+  promotionPriceValue: {
+    color: '#e2e8f0',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  promotionSavingText: {
+    color: '#34d399',
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: -4,
+    marginBottom: 8,
+  },
+  promotionStockNote: {
+    color: '#64748b',
+    fontSize: 9,
+    lineHeight: 13,
   },
   modalActions: {
     flexDirection: 'row',
@@ -4198,6 +5977,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 8,
     marginBottom: 10,
+  },
+  cartCashierField: {
+    marginBottom: 10,
+  },
+  cartCashierValue: {
+    height: 38,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 9,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
   },
   cartCustomerField: {
     flex: 1.15,
@@ -4573,11 +6366,12 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   bottomNav: {
-    height: 56,
+    height: 64,
     backgroundColor: '#1e293b',
     flexDirection: 'row',
     borderTopWidth: 1,
     borderTopColor: '#334155',
+    paddingBottom: Platform.OS === 'web' ? 0 : 6,
   },
   navItem: {
     flex: 1,

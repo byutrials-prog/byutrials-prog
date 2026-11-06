@@ -3,15 +3,120 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Tipsy Point - Sistem Kasir & Manajemen Stok</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Tipsy Point - Sistem Kasir &amp; Manajemen Stok</title>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="/manifest.json" />
+
+  <!-- Theme Color (browser chrome) -->
+  <meta name="theme-color" content="#6366f1" />
+  <meta name="msapplication-TileColor" content="#0f172a" />
+  <meta name="msapplication-TileImage" content="/icons/icon-144x144.png" />
+
+  <!-- ===================== iOS PWA META TAGS ===================== -->
+  <!-- Membuat app berjalan full-screen seperti native app di iOS -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Tipsy Point" />
+  <meta name="mobile-web-app-capable" content="yes" />
+
+  <!-- Apple Touch Icons - wajib untuk "Add to Home Screen" di iOS -->
+  <link rel="apple-touch-icon" href="/icons/icon-180x180.png" />
+  <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png" />
+  <link rel="apple-touch-icon" sizes="167x167" href="/icons/icon-167x167.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180x180.png" />
+
+  <!-- iOS Splash Screens (Launch Images) -->
+  <!-- iPhone 16 Pro Max -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3)"
+    href="/splash/splash-1320x2868.png" />
+  <!-- iPhone 16 / 15 Pro / 14 Pro -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3)"
+    href="/splash/splash-1179x2556.png" />
+  <!-- iPhone 14 / 13 / 12 -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)"
+    href="/splash/splash-1170x2532.png" />
+  <!-- iPhone SE / 8 / 7 / 6 -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)"
+    href="/splash/splash-750x1334.png" />
+  <!-- iPad Pro 12.9" -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2)"
+    href="/splash/splash-2048x2732.png" />
+  <!-- iPad Pro 11" / iPad Air 10.9" -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2)"
+    href="/splash/splash-1668x2388.png" />
+  <!-- iPad Mini / Air 10.5" -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 834px) and (device-height: 1112px) and (-webkit-device-pixel-ratio: 2)"
+    href="/splash/splash-1668x2224.png" />
+  <!-- iPad 10.2" -->
+  <link rel="apple-touch-startup-image"
+    media="screen and (device-width: 768px) and (device-height: 1024px) and (-webkit-device-pixel-ratio: 2)"
+    href="/splash/splash-1536x2048.png" />
+  <!-- ============================================================= -->
+
+  <!-- SEO -->
+  <meta name="description" content="Tipsy Point - Aplikasi kasir dan manajemen stok modern. Kelola penjualan, inventori, dan laporan bisnis dengan mudah." />
+  <meta name="keywords" content="kasir, pos, point of sale, manajemen stok, inventory, penjualan" />
+  <meta name="author" content="Tipsy Point" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Tipsy Point - Sistem Kasir &amp; Manajemen Stok" />
+  <meta property="og:description" content="Aplikasi kasir dan manajemen stok modern untuk bisnis Anda" />
+  <meta property="og:image" content="/icons/icon-512x512.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-96x96.png" />
+  <link rel="shortcut icon" href="/assets/favicon.png" />
+
+  <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.tailwindcss.com"></script>
+
   <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+
     body {
-      font-family: 'Inter', sans-serif;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      width: 100%;
+      height: 100vh;
+      height: 100dvh;
+      min-height: 100vh;
+      min-height: 100dvh;
+      margin: 0;
+      min-width: 320px;
+      -webkit-text-size-adjust: 100%;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+      padding-left: env(safe-area-inset-left);
+      padding-right: env(safe-area-inset-right);
+    }
+
+    body.min-h-screen {
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+
+    #root {
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
     }
 
     /* Custom Scrollbar */
@@ -32,12 +137,102 @@
     ::-webkit-scrollbar-thumb:hover {
       background: #475569;
     }
+
+    /* iOS PWA: prevent overscroll bounce effect */
+    html, body {
+      overscroll-behavior: none;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    @media (max-width: 380px) {
+      .app-header {
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+      }
+
+      .app-user-badge {
+        max-width: 145px;
+        padding-left: 7px !important;
+        padding-right: 7px !important;
+      }
+
+      .app-user-name {
+        max-width: 74px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .app-cart-customer-date-row {
+        flex-direction: column !important;
+        gap: 0 !important;
+      }
+
+      .app-bottom-nav {
+        height: 60px !important;
+      }
+
+      .app-nav-item-text {
+        font-size: 9px !important;
+      }
+    }
+
+    /* PWA install banner tersembunyi default */
+    #pwa-install-banner {
+      display: none;
+    }
   </style>
 </head>
 
 <body class="bg-slate-900 text-slate-100 min-h-screen selection:bg-indigo-500 selection:text-white">
   <div id="root"></div>
   <script type="module" src="/src/main.jsx"></script>
+
+  <!-- Register Service Worker -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+          console.log('[PWA] Service Worker registered:', reg.scope);
+
+          // Cek update SW
+          reg.addEventListener('updatefound', () => {
+            const newWorker = reg.installing;
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                console.log('[PWA] Update tersedia. Reload untuk memperbarui.');
+              }
+            });
+          });
+        } catch (err) {
+          console.error('[PWA] Service Worker gagal didaftarkan:', err);
+        }
+      });
+    }
+
+    // iOS: Deteksi mode standalone (sudah diinstall)
+    if (window.navigator.standalone === true) {
+      console.log('[PWA] Berjalan sebagai app iOS standalone');
+      document.documentElement.classList.add('pwa-ios-standalone');
+    }
+
+    // Android/Desktop: Tangkap event beforeinstallprompt
+    let deferredPrompt;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      window.__pwaInstallPrompt = deferredPrompt;
+      window.dispatchEvent(new CustomEvent('pwa-installable'));
+      console.log('[PWA] App siap diinstall');
+    });
+
+    window.addEventListener('appinstalled', () => {
+      console.log('[PWA] App berhasil diinstall');
+      deferredPrompt = null;
+      window.__pwaInstallPrompt = null;
+    });
+  </script>
 </body>
 
 </html>

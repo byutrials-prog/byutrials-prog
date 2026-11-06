@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tipsy Point - Offline</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #0f172a;
+      color: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 2rem;
+    }
+    .container {
+      max-width: 400px;
+    }
+    .icon {
+      font-size: 5rem;
+      margin-bottom: 1.5rem;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: #6366f1;
+      margin-bottom: 0.75rem;
+    }
+    p {
+      color: #94a3b8;
+      line-height: 1.6;
+      margin-bottom: 2rem;
+    }
+    .btn {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white;
+      border: none;
+      padding: 0.875rem 2rem;
+      border-radius: 0.75rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, opacity 0.2s;
+    }
+    .btn:hover { transform: scale(1.05); opacity: 0.9; }
+    .status {
+      margin-top: 1.5rem;
+      padding: 0.75rem 1rem;
+      background: #1e293b;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">📡</div>
+    <h1>Sedang Offline</h1>
+    <p>Koneksi internet tidak tersedia. Data yang sudah disimpan sebelumnya masih bisa diakses. Sambungkan internet untuk sinkronisasi data terbaru.</p>
+    <button class="btn" onclick="window.location.reload()">🔄 Coba Lagi</button>
+    <div class="status" id="status">Mendeteksi koneksi...</div>
+  </div>
+  <script>
+    function updateStatus() {
+      const el = document.getElementById('status');
+      if (navigator.onLine) {
+        el.textContent = '✅ Koneksi tersedia — klik Coba Lagi';
+        el.style.color = '#4ade80';
+      } else {
+        el.textContent = '❌ Tidak ada koneksi internet';
+        el.style.color = '#f87171';
+      }
+    }
+    updateStatus();
+    window.addEventListener('online', updateStatus);
+    window.addEventListener('offline', updateStatus);
+  </script>
+</body>
+</html>
