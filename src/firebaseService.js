@@ -195,6 +195,16 @@ export const addUser = async (user) => {
   return user;
 };
 
+export const updateUserInDB = async (id, data) => {
+  const docRef = doc(db, 'users', id);
+  await updateDoc(docRef, data);
+};
+
+export const deleteUserFromDB = async (id) => {
+  const docRef = doc(db, 'users', id);
+  await deleteDoc(docRef);
+};
+
 export const addCustomer = async (customer) => {
   await authReady;
   const customerRef = doc(db, 'customers', customer.id);

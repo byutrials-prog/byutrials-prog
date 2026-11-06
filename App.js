@@ -35,6 +35,8 @@ import {
   addTransaction as fbAddTransaction,
   addMutation as fbAddMutation,
   addUser as fbAddUser,
+  updateUserInDB as fbUpdateUser,
+  deleteUserFromDB as fbDeleteUser,
   addCustomer as fbAddCustomer,
   seedInitialData,
 } from './src/firebaseService';
@@ -73,9 +75,9 @@ const getOffsetDate = (daysAgo = 0) => {
 const QRIS_IMAGE_URL = 'https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=QRIS-DEMO-TIPSY-POINT';
 
 const DEFAULT_USERS = [
-  { id: 'U00', name: 'Super Admin', username: 'admin', password: 'admin123', role: 'Super Admin' },
-  { id: 'U01', name: 'Mei', username: 'mei', password: 'admin123', role: 'Kasir' },
-  { id: 'U02', name: 'Renal', username: 'renal', password: 'admin123', role: 'Kasir' },
+  { id: 'U02', name: 'Renal', username: 'renal', password: 'tipsypoint', role: 'Super Admin' },
+  { id: 'U1792195948803', name: 'Mei', username: 'mei', password: 'tipsypoint', role: 'Super Admin' },
+  { id: 'U01', name: 'Windy', username: 'windy', password: 'admin123', role: 'Kasir' },
 ];
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
@@ -1683,6 +1685,15 @@ export default function App() {
   const [addKasirError, setAddKasirError] = useState('');
   const [addKasirRole, setAddKasirRole] = useState('Kasir');
 
+  // Edit user state (Super Admin)
+  const [isEditUserModalOpen, setIsEditUserModalOpen] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
+  const [editUserName, setEditUserName] = useState('');
+  const [editUserUsername, setEditUserUsername] = useState('');
+  const [editUserPassword, setEditUserPassword] = useState('');
+  const [editUserRole, setEditUserRole] = useState('Kasir');
+  const [editUserError, setEditUserError] = useState('');
+
   // Core Data — loaded from Firestore
   const [products, setProducts] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -3253,6 +3264,95 @@ export default function App() {
     setIsUserSwitchOpen(false);
   };
 
+  const openEditUserForm = (userToEdit) => {
+    setEditingUser(userToEdit);
+    setEditUserName(userToEdit.name || '');
+    setEditUserUsername(userToEdit.username || '');
+    setEditUserPassword(userToEdit.password || '');
+    setEditUserRole(userToEdit.role || 'Kasir');
+    setEditUserError('');
+    setIsEditUserModalOpen(true);
+  };
+
+  const handleSaveEditUser = async () => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak mengedit akun.');
+      return;
+    }
+    if (!editingUser) return;
+    const name = editUserName.trim();
+    const username = editUserUsername.trim().toLowerCase();
+    const password = editUserPassword;
+    const role = editUserRole || 'Kasir';
+
+    if (!name) { setEditUserError('Nama wajib diisi.'); return; }
+    if (!username) { setEditUserError('Username wajib diisi.'); return; }
+    if (username.length < 3) { setEditUserError('Username minimal 3 karakter.'); return; }
+
+    const duplicate = users.find((u) => u.id !== editingUser.id && u.username?.toLowerCase() === username);
+    if (duplicate) {
+      setEditUserError('Username sudah digunakan akun lain.');
+      return;
+    }
+    if (!password) { setEditUserError('Sandi wajib diisi.'); return; }
+    if (password.length < 6) { setEditUserError('Sandi minimal 6 karakter.'); return; }
+
+    const updatedUser = {
+      ...editingUser,
+      name,
+      username,
+      password,
+      role,
+    };
+
+    setUsers((prev) => prev.map((u) => (u.id === editingUser.id ? updatedUser : u)));
+    if (currentUser?.id === editingUser.id) {
+      setCurrentUser(updatedUser);
+    }
+
+    try {
+      await fbUpdateUser(editingUser.id, {
+        name,
+        username,
+        password,
+        role,
+      });
+    } catch (e) {
+      console.error('fbUpdateUser error:', e);
+    }
+
+    setIsEditUserModalOpen(false);
+    setEditingUser(null);
+    Alert.alert('Sukses', `Akun "${name}" (${username}) berhasil diperbarui.`);
+  };
+
+  const handleDeleteUser = (userToDelete) => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menghapus akun.');
+      return;
+    }
+    if (currentUser?.id === userToDelete.id) {
+      Alert.alert('Perhatian', 'Anda tidak dapat menghapus akun yang sedang digunakan saat ini.');
+      return;
+    }
+    Alert.alert('Konfirmasi Hapus', `Yakin ingin menghapus akun "${userToDelete.name}" (${userToDelete.username})?`, [
+      { text: 'Batal', style: 'cancel' },
+      {
+        text: 'Hapus',
+        style: 'destructive',
+        onPress: async () => {
+          setUsers((prev) => prev.filter((u) => u.id !== userToDelete.id));
+          try {
+            await fbDeleteUser(userToDelete.id);
+          } catch (e) {
+            console.error('fbDeleteUser error:', e);
+          }
+          Alert.alert('Terhapus', `Akun "${userToDelete.name}" berhasil dihapus.`);
+        },
+      },
+    ]);
+  };
+
   const togglePromotionItem = (productId) => {
     setPromotionItems((previous) => previous.some((item) => item.productId === productId)
       ? previous.filter((item) => item.productId !== productId)
@@ -4325,6 +4425,104 @@ export default function App() {
               </Text>
             </View>
 
+            {isSuperAdmin && (
+              <View style={{ marginTop: 10, marginBottom: 10, width: '100%' }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700' }}>KELOLA AKUN KASIR & ADMIN:</Text>
+                  <TouchableOpacity
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 8, backgroundColor: '#10b98125', borderRadius: 6, borderWidth: 1, borderColor: '#10b981' }}
+                    onPress={() => {
+                      setIsUserSwitchOpen(false);
+                      setAddKasirError('');
+                      setAddKasirRole('Kasir');
+                      setIsAddKasirLoginOpen(true);
+                    }}
+                  >
+                    <Feather name="plus" size={12} color="#10b981" />
+                    <Text style={{ color: '#10b981', fontSize: 11, fontWeight: '700' }}>Tambah Akun</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <ScrollView style={{ maxHeight: 180 }} showsVerticalScrollIndicator={true} nestedScrollEnabled={true}>
+                  {users.map((u) => {
+                    const isAdm = u.role?.toLowerCase() === 'super admin' || u.role?.toLowerCase() === 'admin';
+                    const isSelf = currentUser?.id === u.id;
+                    return (
+                      <View
+                        key={u.id || u.username}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          paddingVertical: 8,
+                          paddingHorizontal: 10,
+                          backgroundColor: '#1e293b',
+                          borderRadius: 8,
+                          marginBottom: 6,
+                          borderWidth: 1,
+                          borderColor: isSelf ? '#a855f7' : '#334155',
+                        }}
+                      >
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }} numberOfLines={1}>
+                              {u.name} {isSelf ? '(Anda)' : ''}
+                            </Text>
+                            <View style={{
+                              backgroundColor: isAdm ? '#7c3aed25' : '#10b98125',
+                              paddingHorizontal: 5,
+                              paddingVertical: 1,
+                              borderRadius: 4,
+                              borderWidth: 1,
+                              borderColor: isAdm ? '#a855f7' : '#10b981',
+                            }}>
+                              <Text style={{ color: isAdm ? '#c084fc' : '#34d399', fontSize: 9, fontWeight: '700' }}>
+                                {isAdm ? 'Super Admin' : 'Kasir'}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>
+                            username: <Text style={{ color: '#cbd5e1' }}>{u.username}</Text>
+                          </Text>
+                        </View>
+
+                        <View style={{ flexDirection: 'row', gap: 6 }}>
+                          <TouchableOpacity
+                            style={{
+                              backgroundColor: '#0284c7',
+                              padding: 7,
+                              borderRadius: 6,
+                            }}
+                            onPress={() => {
+                              setIsUserSwitchOpen(false);
+                              openEditUserForm(u);
+                            }}
+                            accessibilityLabel="Edit akun"
+                          >
+                            <Feather name="edit-2" size={13} color="#fff" />
+                          </TouchableOpacity>
+
+                          {!isSelf && (
+                            <TouchableOpacity
+                              style={{
+                                backgroundColor: '#ef4444',
+                                padding: 7,
+                                borderRadius: 6,
+                              }}
+                              onPress={() => handleDeleteUser(u)}
+                              accessibilityLabel="Hapus akun"
+                            >
+                              <Feather name="trash-2" size={13} color="#fff" />
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            )}
+
             <TouchableOpacity style={styles.logoutBtn} onPress={handleCloseShift}>
               <Feather name="log-out" size={16} color="#fff" />
               <Text style={styles.addUserBtnText}>Tutup Shift & Buat Struk</Text>
@@ -4341,27 +4539,111 @@ export default function App() {
               <Text style={styles.addUserBtnText}>Keluar / Ganti Akun</Text>
             </TouchableOpacity>
 
-            {isSuperAdmin && (
-              <TouchableOpacity
-                style={[styles.logoutBtn, { marginTop: 10, backgroundColor: '#10b981' }]}
-                onPress={() => {
-                  setIsUserSwitchOpen(false);
-                  setAddKasirError('');
-                  setAddKasirRole('Kasir');
-                  setIsAddKasirLoginOpen(true);
-                }}
-              >
-                <Feather name="user-plus" size={16} color="#fff" />
-                <Text style={styles.addUserBtnText}>Tambah Akun Baru (Admin / Kasir)</Text>
-              </TouchableOpacity>
-            )}
-
             <TouchableOpacity
               style={[styles.cancelBtn, { marginTop: 10 }]}
               onPress={() => setIsUserSwitchOpen(false)}
             >
               <Text style={styles.cancelBtnText}>Kembali</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Edit Akun (Super Admin) */}
+      <Modal visible={isEditUserModalOpen} transparent animationType="slide" onRequestClose={() => setIsEditUserModalOpen(false)}>
+        <View style={styles.loginModalOverlay}>
+          <View style={styles.loginModalCard}>
+            <View style={styles.loginModalHeader}>
+              <Text style={styles.loginModalTitle}>Edit Akun: {editingUser?.name}</Text>
+              <TouchableOpacity onPress={() => setIsEditUserModalOpen(false)}>
+                <Feather name="x" size={20} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.loginModalLabel}>Tipe Akun (Role)</Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 10,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                  backgroundColor: editUserRole === 'Kasir' ? '#10b981' : '#1e293b',
+                  borderWidth: 1,
+                  borderColor: editUserRole === 'Kasir' ? '#10b981' : '#334155',
+                }}
+                onPress={() => setEditUserRole('Kasir')}
+              >
+                <Text style={{
+                  color: editUserRole === 'Kasir' ? '#fff' : '#94a3b8',
+                  fontWeight: '700',
+                  fontSize: 13,
+                }}>
+                  Kasir
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 10,
+                  borderRadius: 8,
+                  alignItems: 'center',
+                  backgroundColor: editUserRole === 'Super Admin' ? '#7c3aed' : '#1e293b',
+                  borderWidth: 1,
+                  borderColor: editUserRole === 'Super Admin' ? '#7c3aed' : '#334155',
+                }}
+                onPress={() => setEditUserRole('Super Admin')}
+              >
+                <Text style={{
+                  color: editUserRole === 'Super Admin' ? '#fff' : '#94a3b8',
+                  fontWeight: '700',
+                  fontSize: 13,
+                }}>
+                  Super Admin
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.loginModalLabel}>Nama Lengkap</Text>
+            <TextInput
+              style={styles.loginInput}
+              placeholder="Nama Kasir / Admin"
+              placeholderTextColor="#64748b"
+              value={editUserName}
+              onChangeText={(t) => { setEditUserName(t); setEditUserError(''); }}
+            />
+
+            <Text style={styles.loginModalLabel}>Username</Text>
+            <TextInput
+              style={styles.loginInput}
+              placeholder="Username"
+              placeholderTextColor="#64748b"
+              autoCapitalize="none"
+              value={editUserUsername}
+              onChangeText={(t) => { setEditUserUsername(t); setEditUserError(''); }}
+            />
+
+            <Text style={styles.loginModalLabel}>Sandi / Password</Text>
+            <TextInput
+              style={styles.loginInput}
+              placeholder="Minimal 6 karakter"
+              placeholderTextColor="#64748b"
+              value={editUserPassword}
+              onChangeText={(t) => { setEditUserPassword(t); setEditUserError(''); }}
+            />
+
+            {!!editUserError && <Text style={styles.loginError}>{editUserError}</Text>}
+
+            <View style={styles.loginModalActions}>
+              <TouchableOpacity style={styles.loginModalCancel} onPress={() => setIsEditUserModalOpen(false)}>
+                <Text style={styles.loginModalCancelText}>Batal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.loginModalSubmit, { backgroundColor: '#0284c7' }]} onPress={handleSaveEditUser}>
+                <Feather name="check" size={14} color="#fff" />
+                <Text style={styles.loginModalSubmitText}>Simpan Perubahan</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
