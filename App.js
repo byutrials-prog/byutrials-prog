@@ -225,7 +225,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 80000,
     "hpp": 73000,
-    "stock": 10,
+    "stock": 11,
     "minStock": 5,
     "barcode": "89910000548",
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
@@ -236,7 +236,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 78000,
     "hpp": 73000,
-    "stock": 5,
+    "stock": 7,
     "minStock": 5,
     "barcode": "89910000940",
     "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
@@ -258,7 +258,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 75000,
     "hpp": 67000,
-    "stock": 14,
+    "stock": 16,
     "minStock": 5,
     "barcode": "89910000411",
     "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
@@ -302,7 +302,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 85000,
     "hpp": 73000,
-    "stock": 9,
+    "stock": 10,
     "minStock": 5,
     "barcode": "89910000685",
     "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
@@ -313,7 +313,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 85000,
     "hpp": 73000,
-    "stock": 8,
+    "stock": 10,
     "minStock": 5,
     "barcode": "89910000822",
     "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
@@ -324,7 +324,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 80000,
     "hpp": 69000,
-    "stock": 5,
+    "stock": 6,
     "minStock": 5,
     "barcode": "89910001096",
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
@@ -335,7 +335,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 80000,
     "hpp": 69000,
-    "stock": 6,
+    "stock": 7,
     "minStock": 5,
     "barcode": "89910001233",
     "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
@@ -357,7 +357,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 80000,
     "hpp": 69000,
-    "stock": 9,
+    "stock": 10,
     "minStock": 5,
     "barcode": "89910000980",
     "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
@@ -368,7 +368,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 80000,
     "hpp": 69000,
-    "stock": 4,
+    "stock": 9,
     "minStock": 5,
     "barcode": "89910000959",
     "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
@@ -489,7 +489,7 @@ const INITIAL_PRODUCTS = [
     "category": "Beer & RTD",
     "price": 40000,
     "hpp": 38000,
-    "stock": 31,
+    "stock": 42,
     "minStock": 5,
     "barcode": "89910001918",
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
@@ -500,7 +500,7 @@ const INITIAL_PRODUCTS = [
     "category": "Beer & RTD",
     "price": 45000,
     "hpp": 42000,
-    "stock": 4,
+    "stock": 6,
     "minStock": 5,
     "barcode": "89910002055",
     "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
@@ -676,7 +676,7 @@ const INITIAL_PRODUCTS = [
     "category": "Whisky",
     "price": 175000,
     "hpp": 158000,
-    "stock": 3,
+    "stock": 4,
     "minStock": 5,
     "barcode": "89910007124",
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
@@ -852,7 +852,7 @@ const INITIAL_PRODUCTS = [
     "category": "Vodka & Spirits",
     "price": 175000,
     "hpp": 162000,
-    "stock": 5,
+    "stock": 6,
     "minStock": 5,
     "barcode": "89910005617",
     "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
@@ -885,7 +885,7 @@ const INITIAL_PRODUCTS = [
     "category": "Vodka & Spirits",
     "price": 200000,
     "hpp": 180000,
-    "stock": 3,
+    "stock": 4,
     "minStock": 5,
     "barcode": "89910006028",
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
@@ -1083,7 +1083,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 85000,
     "hpp": 78000,
-    "stock": 2,
+    "stock": 3,
     "minStock": 5,
     "barcode": "89910001507",
     "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
@@ -1094,7 +1094,7 @@ const INITIAL_PRODUCTS = [
     "category": "Anggur & Wine",
     "price": 75000,
     "hpp": 67000,
-    "stock": 8,
+    "stock": 9,
     "minStock": 5,
     "barcode": "89910001644",
     "image": "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?w=300&auto=format&fit=crop&q=80"
@@ -1127,7 +1127,7 @@ const INITIAL_PRODUCTS = [
     "category": "Vodka & Spirits",
     "price": 115000,
     "hpp": 107000,
-    "stock": 2,
+    "stock": 4,
     "minStock": 5,
     "barcode": "89910003562",
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
@@ -1193,7 +1193,7 @@ const INITIAL_PRODUCTS = [
     "category": "Vodka & Spirits",
     "price": 70000,
     "hpp": 62000,
-    "stock": 6,
+    "stock": 7,
     "minStock": 5,
     "barcode": "89910001150",
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
@@ -1204,7 +1204,7 @@ const INITIAL_PRODUCTS = [
     "category": "Whisky",
     "price": 115000,
     "hpp": 108000,
-    "stock": 2,
+    "stock": 3,
     "minStock": 5,
     "barcode": "89910007535",
     "image": "https://images.unsplash.com/photo-1527281400683-1aae777175f8?w=300&auto=format&fit=crop&q=80"
@@ -1259,7 +1259,7 @@ const INITIAL_PRODUCTS = [
     "category": "Vodka & Spirits",
     "price": 75000,
     "hpp": 70000,
-    "stock": 18,
+    "stock": 19,
     "minStock": 5,
     "barcode": "89910003836",
     "image": "https://images.unsplash.com/photo-1569529465841-dfecdab7503b?w=300&auto=format&fit=crop&q=80"
@@ -1369,7 +1369,7 @@ const INITIAL_PRODUCTS = [
     "category": "Beer & RTD",
     "price": 8000,
     "hpp": 6500,
-    "stock": 0,
+    "stock": 1,
     "minStock": 5,
     "barcode": "89910001200",
     "image": "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?w=300&auto=format&fit=crop&q=80"
@@ -1380,7 +1380,7 @@ const INITIAL_PRODUCTS = [
     "category": "Beer & RTD",
     "price": 35000,
     "hpp": 32000,
-    "stock": 12,
+    "stock": 14,
     "minStock": 5,
     "barcode": "89910002877",
     "image": "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?w=300&auto=format&fit=crop&q=80"
@@ -1534,7 +1534,7 @@ const INITIAL_PRODUCTS = [
     "category": "Vodka & Spirits",
     "price": 320000,
     "hpp": 300000,
-    "stock": 2,
+    "stock": 3,
     "minStock": 5,
     "barcode": "89910003973",
     "image": "https://images.unsplash.com/photo-1551024709-8f23befc6f87?w=300&auto=format&fit=crop&q=80"
@@ -1563,50 +1563,7 @@ const INITIAL_PRODUCTS = [
   }
 ];
 
-const INITIAL_TRANSACTIONS = [
-  {
-    id: 'TRX-101',
-    date: getOffsetDate(0),
-    cashier: 'Kasir Siti',
-    items: [
-      { productId: 'P01', name: 'ANGGUR PUTIH', qty: 2, price: 70000, hpp: 55000, itemDiscount: 0 },
-      { productId: 'P14', name: 'BINTANG 620', qty: 3, price: 40000, hpp: 31000, itemDiscount: 0 },
-    ],
-    subtotal: 260000,
-    discountType: 'fixed',
-    discountValue: 10000,
-    discountAmount: 10000,
-    taxAmount: 0,
-    total: 250000,
-    method: 'Tunai',
-  },
-  {
-    id: 'TRX-102',
-    date: getOffsetDate(1),
-    cashier: 'Kasir Budi',
-    items: [{ productId: 'P70', name: 'JACK DANIEL', qty: 1, price: 650000, hpp: 507000, itemDiscount: 0 }],
-    subtotal: 650000,
-    discountType: 'percent',
-    discountValue: 5,
-    discountAmount: 32500,
-    taxAmount: 0,
-    total: 617500,
-    method: 'QRIS',
-  },
-  {
-    id: 'TRX-103',
-    date: getOffsetDate(2),
-    cashier: 'Kasir Siti',
-    items: [{ productId: 'P34', name: 'BAE SOJU LYCHEE', qty: 4, price: 75000, hpp: 59000, itemDiscount: 0 }],
-    subtotal: 300000,
-    discountType: 'fixed',
-    discountValue: 0,
-    discountAmount: 0,
-    taxAmount: 0,
-    total: 300000,
-    method: 'Transfer',
-  },
-];
+const INITIAL_TRANSACTIONS = [];
 
 const INITIAL_MUTATIONS = [
   {

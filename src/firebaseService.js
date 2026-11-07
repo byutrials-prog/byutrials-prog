@@ -340,3 +340,18 @@ export const batchUpdateProductStocks = async (stockUpdates) => {
   });
   await batch.commit();
 };
+
+// ==========================================
+// Clear all transactions from Firestore
+// ==========================================
+export const clearAllTransactionsFromDB = async () => {
+  await authReady;
+  const snap = await getDocs(transactionsCol);
+  const batchSize = 400;
+  for (let i = 0; i < snap.docs.length; i += batchSize) {
+    const batch = writeBatch(db);
+    snap.docs.slice(i, i + batchSize).forEach(docSnap => batch.delete(docSnap.ref));
+    await batch.commit();
+  }
+};
+
