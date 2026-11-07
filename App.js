@@ -15,6 +15,7 @@ import {
   StatusBar,
   Platform,
   useWindowDimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
@@ -1629,6 +1630,8 @@ export default function App() {
   const [activeShiftId, setActiveShiftId] = useState(null);
   const [closedShiftSummary, setClosedShiftSummary] = useState(null);
   const [isShiftReceiptOpen, setIsShiftReceiptOpen] = useState(false);
+  const [isReceiptPngSaving, setIsReceiptPngSaving] = useState(false);
+  const [receiptPngPreview, setReceiptPngPreview] = useState(null);
   const [newUserName, setNewUserName] = useState('');
   const [newUserRole, setNewUserRole] = useState('Kasir');
   const [isAddingUser, setIsAddingUser] = useState(false);
@@ -2121,31 +2124,54 @@ export default function App() {
 
   const saveReceiptPng = async (receiptRef, filename, scrollRef) => {
     try {
+      setIsReceiptPngSaving(true);
       if (!receiptRef.current) throw new Error('Receipt content is not available.');
+
       if (Platform.OS === 'web') {
         const { toPng } = await import('html-to-image');
         await document.fonts?.ready;
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        const originalElement = receiptRef.current;
 
-        // Buat clone offscreen dengan ukuran asli penuh tanpa dipotong scroll/maxHeight
-        const clone = originalElement.cloneNode(true);
-        clone.style.position = 'fixed';
-        clone.style.top = '-99999px';
-        clone.style.left = '-99999px';
+        const originalElement = receiptRef.current;
+        const domNode = originalElement instanceof HTMLElement
+          ? originalElement
+          : (originalElement.getScrollableNode?.() || originalElement._nativeNode || originalElement);
+
+        if (!domNode || typeof domNode.cloneNode !== 'function') {
+          throw new Error('Elemen struk tidak valid untuk pembuatan gambar.');
+        }
+
+        // Buat container wrapper tersembunyi tanpa offset koordinat negatif pada clone
+        const wrapper = document.createElement('div');
+        wrapper.style.position = 'fixed';
+        wrapper.style.left = '0';
+        wrapper.style.top = '0';
+        wrapper.style.width = '380px';
+        wrapper.style.height = '100px';
+        wrapper.style.overflow = 'hidden';
+        wrapper.style.zIndex = '-99999';
+        wrapper.style.opacity = '0';
+        wrapper.style.pointerEvents = 'none';
+
+        const clone = domNode.cloneNode(true);
+        clone.style.position = 'relative';
+        clone.style.top = '0';
+        clone.style.left = '0';
+        clone.style.margin = '0';
         clone.style.width = '380px';
         clone.style.maxWidth = '380px';
         clone.style.height = 'auto';
         clone.style.maxHeight = 'none';
         clone.style.overflow = 'visible';
         clone.style.backgroundColor = '#ffffff';
-        clone.style.zIndex = '-1000';
-        clone.style.padding = '18px 14px 28px 14px';
+        clone.style.padding = '20px 16px 28px 16px';
         clone.style.boxSizing = 'border-box';
-        document.body.appendChild(clone);
+
+        wrapper.appendChild(clone);
+        document.body.appendChild(wrapper);
 
         await new Promise((resolve) => setTimeout(resolve, 150));
-        const fullHeight = Math.ceil(Math.max(clone.scrollHeight, clone.offsetHeight)) + 12;
+        const fullHeight = Math.ceil(Math.max(clone.scrollHeight, clone.offsetHeight)) + 24;
         const fullWidth = 380;
 
         let dataUrl;
@@ -2157,24 +2183,76 @@ export default function App() {
             width: fullWidth,
             height: fullHeight,
             style: {
+              position: 'static',
+              top: '0',
+              left: '0',
+              margin: '0',
               width: `${fullWidth}px`,
               height: `${fullHeight}px`,
               maxHeight: 'none',
               overflow: 'visible',
+              opacity: '1',
+              transform: 'none',
             },
           });
         } finally {
-          if (clone.parentNode) {
-            clone.parentNode.removeChild(clone);
+          if (wrapper.parentNode) {
+            wrapper.parentNode.removeChild(wrapper);
           }
         }
 
-        const downloadLink = document.createElement('a');
-        downloadLink.href = dataUrl;
-        downloadLink.download = filename;
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        document.body.removeChild(downloadLink);
+        if (!dataUrl || dataUrl.length < 500) {
+          throw new Error('Gagal merender gambar struk.');
+        }
+
+        // Siapkan Blob & File untuk Download / Share
+        const byteString = atob(dataUrl.split(',')[1]);
+        const mimeString = dataUrl.split(',')[0].split(':')[1].split(';')[0];
+        const ab = new ArrayBuffer(byteString.length);
+        const ia = new Uint8Array(ab);
+        for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i);
+        }
+        const blob = new Blob([ab], { type: mimeString });
+        const file = new File([blob], filename, { type: 'image/png' });
+
+        // 1. Coba Web Share API (Khusus iOS / iPhone Safari & PWA agar langsung muncul Sheet Simpan Gambar ke Galeri Foto)
+        if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              files: [file],
+              title: filename,
+            });
+            return;
+          } catch (shareErr) {
+            if (shareErr.name === 'AbortError') return;
+            console.warn('Web Share API error:', shareErr);
+          }
+        }
+
+        // 2. Download otomatis via Blob URL (Desktop & Android)
+        try {
+          const blobUrl = URL.createObjectURL(blob);
+          const downloadLink = document.createElement('a');
+          downloadLink.href = blobUrl;
+          downloadLink.download = filename;
+          document.body.appendChild(downloadLink);
+          downloadLink.click();
+          setTimeout(() => {
+            if (downloadLink.parentNode) {
+              downloadLink.parentNode.removeChild(downloadLink);
+            }
+            URL.revokeObjectURL(blobUrl);
+          }, 1000);
+        } catch (dlErr) {
+          console.warn('Download link fallback error:', dlErr);
+        }
+
+        // 3. Tampilkan Preview Modal (Sangat membantu di iPhone/Safari jika unduhan otomatis terblokir)
+        setReceiptPngPreview({
+          url: dataUrl,
+          filename: filename,
+        });
         return;
       }
 
@@ -2183,7 +2261,7 @@ export default function App() {
         format: 'png',
         quality: 1,
         result: 'tmpfile',
-        snapshotContentContainer: true,
+        snapshotContentContainer: Boolean(scrollRef?.current),
       });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(imageUri, {
@@ -2197,6 +2275,8 @@ export default function App() {
     } catch (error) {
       console.error('Receipt PNG export error:', error);
       Alert.alert('Gagal membuat PNG', 'Coba lagi setelah struk selesai dimuat.');
+    } finally {
+      setIsReceiptPngSaving(false);
     }
   };
 
@@ -5021,11 +5101,16 @@ export default function App() {
               <Text style={styles.receiptDoneBtnText}>Cetak Struk Shift</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.receiptDoneBtn, { backgroundColor: '#047857', marginBottom: 8 }]}
+              style={[styles.receiptDoneBtn, { backgroundColor: '#047857', marginBottom: 8, opacity: isReceiptPngSaving ? 0.7 : 1, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' }]}
+              disabled={isReceiptPngSaving}
               onPress={() => saveReceiptPng(shiftReceiptCaptureRef, `struk-shift-${closedShiftSummary?.shiftId || 'kasir'}.png`)}
             >
-              <Feather name="image" size={16} color="#fff" />
-              <Text style={styles.receiptDoneBtnText}>Simpan PNG</Text>
+              {isReceiptPngSaving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Feather name="image" size={16} color="#fff" />
+              )}
+              <Text style={styles.receiptDoneBtnText}>{isReceiptPngSaving ? 'Menyiapkan Lembar PNG...' : 'Simpan PNG'}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsShiftReceiptOpen(false)}>
               <Text style={styles.cancelBtnText}>Lanjut Shift</Text>
@@ -5807,15 +5892,72 @@ export default function App() {
               <Text style={styles.receiptDoneBtnText}>Cetak Struk</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.receiptDoneBtn, { flexDirection: 'row', gap: 8, marginTop: 8, backgroundColor: '#047857' }]}
+              style={[styles.receiptDoneBtn, { flexDirection: 'row', gap: 8, marginTop: 8, backgroundColor: '#047857', opacity: isReceiptPngSaving ? 0.7 : 1, alignItems: 'center', justifyContent: 'center' }]}
+              disabled={isReceiptPngSaving}
               onPress={() => saveReceiptPng(salesReceiptCaptureRef, `struk-penjualan-${currentReceipt?.id || 'transaksi'}.png`)}
             >
-              <Feather name="image" size={16} color="#fff" />
-              <Text style={styles.receiptDoneBtnText}>Simpan PNG</Text>
+              {isReceiptPngSaving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Feather name="image" size={16} color="#fff" />
+              )}
+              <Text style={styles.receiptDoneBtnText}>{isReceiptPngSaving ? 'Menyiapkan Lembar PNG...' : 'Simpan PNG'}</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[styles.receiptDoneBtn, { marginTop: 8, backgroundColor: '#27313f' }]} onPress={() => setIsReceiptModalOpen(false)}>
               <Text style={styles.receiptDoneBtnText}>Selesai & Transaksi Baru</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Preview PNG Struk */}
+      <Modal visible={!!receiptPngPreview} animationType="fade" transparent onRequestClose={() => setReceiptPngPreview(null)}>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View style={[styles.modalBox, { maxWidth: 440, maxHeight: '92%', alignItems: 'center', backgroundColor: '#fff', padding: 18 }]}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: '#192230', marginBottom: 4 }}>
+              Lembar Struk PNG
+            </Text>
+            <Text style={{ fontSize: 12, color: '#6b7280', textAlign: 'center', marginBottom: 12 }}>
+              {Platform.OS === 'web' && typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent || '')
+                ? 'Tekan & tahan gambar di bawah untuk "Simpan ke Foto", atau klik tombol Bagikan.'
+                : 'Lembar gambar struk lengkap berhasil dibuat.'}
+            </Text>
+            <ScrollView style={{ width: '100%', maxHeight: 420 }} contentContainerStyle={{ alignItems: 'center', paddingVertical: 4 }}>
+              {receiptPngPreview?.url && (
+                <Image
+                  source={{ uri: receiptPngPreview.url }}
+                  style={{ width: 330, height: 490, resizeMode: 'contain', borderRadius: 8, borderWidth: 1, borderColor: '#e5e7eb' }}
+                />
+              )}
+            </ScrollView>
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14, width: '100%' }}>
+              <TouchableOpacity
+                style={[styles.cancelBtn, { flex: 1, marginTop: 0 }]}
+                onPress={() => setReceiptPngPreview(null)}
+              >
+                <Text style={styles.cancelBtnText}>Tutup</Text>
+              </TouchableOpacity>
+              {Platform.OS === 'web' && typeof navigator !== 'undefined' && !!navigator.share && (
+                <TouchableOpacity
+                  style={[styles.receiptDoneBtn, { flex: 1, marginTop: 0, backgroundColor: '#047857', flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' }]}
+                  onPress={async () => {
+                    try {
+                      const res = await fetch(receiptPngPreview.url);
+                      const blob = await res.blob();
+                      const file = new File([blob], receiptPngPreview.filename || 'struk.png', { type: 'image/png' });
+                      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                        await navigator.share({ files: [file], title: receiptPngPreview.filename });
+                      }
+                    } catch (e) {
+                      if (e.name !== 'AbortError') console.warn(e);
+                    }
+                  }}
+                >
+                  <Feather name="share-2" size={16} color="#fff" />
+                  <Text style={styles.receiptDoneBtnText}>Bagikan</Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         </View>
       </Modal>
