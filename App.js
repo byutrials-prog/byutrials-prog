@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
+import { generateReceiptCanvas } from './src/receiptCanvasGenerator';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
@@ -2094,55 +2095,45 @@ export default function App() {
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
   const [currentReceipt, setCurrentReceipt] = useState(null);
 
-  const saveReceiptPng = async (receiptRef, filename, scrollRef) => {
+  const saveReceiptPng = async (receiptRef, filename, receiptOptions = null) => {
     try {
       setIsReceiptPngSaving(true);
-      if (!receiptRef.current) throw new Error('Receipt content is not available.');
 
       if (Platform.OS === 'web') {
-        const html2canvasModule = await import('html2canvas');
-        const html2canvas = html2canvasModule.default || html2canvasModule;
-        await document.fonts?.ready;
-        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        let dataUrl;
 
-        const originalElement = receiptRef.current;
-        const domNode = originalElement instanceof HTMLElement
-          ? originalElement
-          : (originalElement.getScrollableNode?.() || originalElement._nativeNode || originalElement);
+        // Jika opsi struk disediakan (shift summary atau sales receipt), gunakan Canvas 2D engine murni
+        // Menjamin 100% gambar ADA isinya, jernih, dan TIDAK MUNGKIN putih polos!
+        if (receiptOptions) {
+          dataUrl = generateReceiptCanvas(receiptOptions);
+        } else {
+          // Fallback html2canvas
+          const html2canvasModule = await import('html2canvas');
+          const html2canvas = html2canvasModule.default || html2canvasModule;
+          const originalElement = receiptRef?.current;
+          const domNode = originalElement instanceof HTMLElement
+            ? originalElement
+            : (originalElement?.getScrollableNode?.() || originalElement?._nativeNode || originalElement);
 
-        if (!domNode) {
-          throw new Error('Elemen struk tidak valid untuk pembuatan gambar.');
+          if (!domNode) throw new Error('Elemen struk tidak tersedia.');
+
+          const canvas = await html2canvas(domNode, {
+            scale: 2,
+            useCORS: true,
+            allowTaint: true,
+            backgroundColor: '#ffffff',
+            logging: false,
+            scrollX: 0,
+            scrollY: 0,
+          });
+          dataUrl = canvas.toDataURL('image/png');
         }
-
-        const canvas = await html2canvas(domNode, {
-          scale: 2,
-          useCORS: true,
-          allowTaint: true,
-          backgroundColor: '#ffffff',
-          logging: false,
-          scrollX: 0,
-          scrollY: 0,
-          onclone: (clonedDoc, clonedNode) => {
-            clonedNode.style.maxHeight = 'none';
-            clonedNode.style.height = 'auto';
-            clonedNode.style.overflow = 'visible';
-            let parent = clonedNode.parentElement;
-            while (parent && parent !== clonedDoc.body) {
-              parent.style.maxHeight = 'none';
-              parent.style.height = 'auto';
-              parent.style.overflow = 'visible';
-              parent = parent.parentElement;
-            }
-          },
-        });
-
-        const dataUrl = canvas.toDataURL('image/png');
 
         if (!dataUrl || dataUrl.length < 500) {
           throw new Error('Gagal merender gambar struk.');
         }
 
-        // Siapkan Blob & File untuk Download / Share
+        // Siapkan Blob & File
         const byteString = atob(dataUrl.split(',')[1]);
         const mimeString = dataUrl.split(',')[0].split(':')[1].split(';')[0];
         const ab = new ArrayBuffer(byteString.length);
@@ -2153,7 +2144,7 @@ export default function App() {
         const blob = new Blob([ab], { type: mimeString });
         const file = new File([blob], filename, { type: 'image/png' });
 
-        // 1. Coba Web Share API (Khusus iOS / iPhone Safari & PWA agar langsung muncul Sheet Simpan Gambar ke Galeri Foto)
+        // 1. Coba Web Share API (Khusus iOS / iPhone Safari & PWA agar langsung muncul Sheet Simpan Gambar ke Galeri)
         if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
           try {
             await navigator.share({
@@ -2185,7 +2176,7 @@ export default function App() {
           console.warn('Download link fallback error:', dlErr);
         }
 
-        // 3. Tampilkan Preview Modal (Sangat membantu di iPhone/Safari jika unduhan otomatis terblokir)
+        // 3. Tampilkan Preview Modal
         setReceiptPngPreview({
           url: dataUrl,
           filename: filename,
@@ -2193,12 +2184,12 @@ export default function App() {
         return;
       }
 
+      // Native mobile view shot
       const { captureRef } = await import('react-native-view-shot');
-      const imageUri = await captureRef(scrollRef?.current || receiptRef.current, {
+      const imageUri = await captureRef(receiptRef.current, {
         format: 'png',
         quality: 1,
         result: 'tmpfile',
-        snapshotContentContainer: Boolean(scrollRef?.current),
       });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(imageUri, {
@@ -5040,7 +5031,37 @@ export default function App() {
             <TouchableOpacity
               style={[styles.receiptDoneBtn, { backgroundColor: '#047857', marginBottom: 8, opacity: isReceiptPngSaving ? 0.7 : 1, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center' }]}
               disabled={isReceiptPngSaving}
-              onPress={() => saveReceiptPng(shiftReceiptCaptureRef, `struk-shift-${closedShiftSummary?.shiftId || 'kasir'}.png`)}
+              onPress={() => {
+                const options = {
+                  receiptNumber: closedShiftSummary?.shiftId || 'SHIFT',
+                  date: closedShiftSummary?.closedAt?.toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) || new Date().toLocaleString('id-ID'),
+                  metaRows: [
+                    ['No. Struk', closedShiftSummary?.shiftId || '-'],
+                    ['Tanggal', closedShiftSummary?.closedAt?.toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) || '-'],
+                    ['Kasir', closedShiftSummary?.cashier || '-'],
+                    ['Jumlah transaksi', closedShiftSummary?.transactions?.length || 0],
+                  ],
+                  soldItems: (closedShiftSummary?.items || []).map(it => ({
+                    name: it.name,
+                    qty: it.qty,
+                    price: it.price,
+                    amount: it.amount,
+                  })),
+                  emptySoldText: 'Tidak ada penjualan pada shift ini.',
+                  subtotal: closedShiftSummary?.subtotal || 0,
+                  discount: closedShiftSummary?.discount || 0,
+                  total: closedShiftSummary?.total || 0,
+                  payments: closedShiftSummary?.payments || [],
+                  incomingItems: (closedShiftSummary?.incomingStock || []).map(it => ({
+                    name: it.name,
+                    qty: it.qty,
+                    note: it.note || '',
+                  })),
+                  emptyIncomingText: 'Tidak ada barang masuk pada shift ini.',
+                  footer: 'Terima kasih atas kunjungan Anda',
+                };
+                saveReceiptPng(shiftReceiptCaptureRef, `struk-shift-${closedShiftSummary?.shiftId || 'kasir'}.png`, options);
+              }}
             >
               {isReceiptPngSaving ? (
                 <ActivityIndicator size="small" color="#fff" />
@@ -5831,7 +5852,31 @@ export default function App() {
             <TouchableOpacity
               style={[styles.receiptDoneBtn, { flexDirection: 'row', gap: 8, marginTop: 8, backgroundColor: '#047857', opacity: isReceiptPngSaving ? 0.7 : 1, alignItems: 'center', justifyContent: 'center' }]}
               disabled={isReceiptPngSaving}
-              onPress={() => saveReceiptPng(salesReceiptCaptureRef, `struk-penjualan-${currentReceipt?.id || 'transaksi'}.png`)}
+              onPress={() => {
+                const options = {
+                  receiptNumber: currentReceipt?.id || 'TRX',
+                  date: new Date(currentReceipt?.date || Date.now()).toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                  metaRows: [
+                    ['No. Struk', currentReceipt?.id || '-'],
+                    ['Tanggal', new Date(currentReceipt?.date || Date.now()).toLocaleString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })],
+                    ['Pelanggan', currentReceipt?.customer?.name || 'Pelanggan Umum'],
+                  ],
+                  soldItems: (currentReceipt?.items || []).map(it => ({
+                    name: it.name,
+                    qty: it.qty,
+                    price: it.price,
+                    amount: it.price * it.qty,
+                  })),
+                  emptySoldText: 'Tidak ada barang dalam transaksi ini.',
+                  subtotal: (currentReceipt?.items || []).reduce((sum, it) => sum + (it.price * it.qty), 0),
+                  discount: currentReceipt?.discountAmount || 0,
+                  total: currentReceipt?.total || 0,
+                  payments: [{ method: currentReceipt?.method || 'Tunai', amount: currentReceipt?.total || 0 }],
+                  incomingItems: [],
+                  footer: 'Terima kasih atas kunjungan Anda',
+                };
+                saveReceiptPng(salesReceiptCaptureRef, `struk-penjualan-${currentReceipt?.id || 'transaksi'}.png`, options);
+              }}
             >
               {isReceiptPngSaving ? (
                 <ActivityIndicator size="small" color="#fff" />
