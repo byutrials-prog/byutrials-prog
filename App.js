@@ -2100,7 +2100,8 @@ export default function App() {
       if (!receiptRef.current) throw new Error('Receipt content is not available.');
 
       if (Platform.OS === 'web') {
-        const { toPng } = await import('html-to-image');
+        const html2canvasModule = await import('html2canvas');
+        const html2canvas = html2canvasModule.default || html2canvasModule;
         await document.fonts?.ready;
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
@@ -2109,69 +2110,33 @@ export default function App() {
           ? originalElement
           : (originalElement.getScrollableNode?.() || originalElement._nativeNode || originalElement);
 
-        if (!domNode || typeof domNode.cloneNode !== 'function') {
+        if (!domNode) {
           throw new Error('Elemen struk tidak valid untuk pembuatan gambar.');
         }
 
-        // Buat container wrapper tersembunyi tanpa offset koordinat negatif pada clone
-        const wrapper = document.createElement('div');
-        wrapper.style.position = 'fixed';
-        wrapper.style.left = '0';
-        wrapper.style.top = '0';
-        wrapper.style.width = '380px';
-        wrapper.style.height = '100px';
-        wrapper.style.overflow = 'hidden';
-        wrapper.style.zIndex = '-99999';
-        wrapper.style.opacity = '0';
-        wrapper.style.pointerEvents = 'none';
+        const canvas = await html2canvas(domNode, {
+          scale: 2,
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: '#ffffff',
+          logging: false,
+          scrollX: 0,
+          scrollY: 0,
+          onclone: (clonedDoc, clonedNode) => {
+            clonedNode.style.maxHeight = 'none';
+            clonedNode.style.height = 'auto';
+            clonedNode.style.overflow = 'visible';
+            let parent = clonedNode.parentElement;
+            while (parent && parent !== clonedDoc.body) {
+              parent.style.maxHeight = 'none';
+              parent.style.height = 'auto';
+              parent.style.overflow = 'visible';
+              parent = parent.parentElement;
+            }
+          },
+        });
 
-        const clone = domNode.cloneNode(true);
-        clone.style.position = 'relative';
-        clone.style.top = '0';
-        clone.style.left = '0';
-        clone.style.margin = '0';
-        clone.style.width = '380px';
-        clone.style.maxWidth = '380px';
-        clone.style.height = 'auto';
-        clone.style.maxHeight = 'none';
-        clone.style.overflow = 'visible';
-        clone.style.backgroundColor = '#ffffff';
-        clone.style.padding = '20px 16px 28px 16px';
-        clone.style.boxSizing = 'border-box';
-
-        wrapper.appendChild(clone);
-        document.body.appendChild(wrapper);
-
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        const fullHeight = Math.ceil(Math.max(clone.scrollHeight, clone.offsetHeight)) + 24;
-        const fullWidth = 380;
-
-        let dataUrl;
-        try {
-          dataUrl = await toPng(clone, {
-            backgroundColor: '#ffffff',
-            pixelRatio: 2,
-            cacheBust: true,
-            width: fullWidth,
-            height: fullHeight,
-            style: {
-              position: 'static',
-              top: '0',
-              left: '0',
-              margin: '0',
-              width: `${fullWidth}px`,
-              height: `${fullHeight}px`,
-              maxHeight: 'none',
-              overflow: 'visible',
-              opacity: '1',
-              transform: 'none',
-            },
-          });
-        } finally {
-          if (wrapper.parentNode) {
-            wrapper.parentNode.removeChild(wrapper);
-          }
-        }
+        const dataUrl = canvas.toDataURL('image/png');
 
         if (!dataUrl || dataUrl.length < 500) {
           throw new Error('Gagal merender gambar struk.');
