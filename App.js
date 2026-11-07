@@ -3469,21 +3469,29 @@ export default function App() {
       Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menghapus produk.');
       return;
     }
+    const performDelete = async () => {
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+      setCart((prev) => prev.filter((c) => c.productId !== id));
+      try {
+        await deleteProductFromDB(id);
+      } catch (e) {
+        console.error('Firestore delete product error:', e);
+      }
+    };
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+      if (window.confirm('Yakin ingin menghapus produk ini?')) {
+        performDelete();
+      }
+      return;
+    }
+
     Alert.alert('Konfirmasi Hapus', 'Yakin menghapus produk ini?', [
       { text: 'Batal', style: 'cancel' },
       {
         text: 'Hapus',
         style: 'destructive',
-        onPress: async () => {
-          setProducts((prev) => prev.filter((p) => p.id !== id));
-          setCart((prev) => prev.filter((c) => c.productId !== id));
-          // Delete from Firestore
-          try {
-            await deleteProductFromDB(id);
-          } catch (e) {
-            console.error('Firestore delete product error:', e);
-          }
-        },
+        onPress: performDelete,
       },
     ]);
   };
@@ -3689,20 +3697,32 @@ export default function App() {
       Alert.alert('Perhatian', 'Anda tidak dapat menghapus akun yang sedang digunakan saat ini.');
       return;
     }
+
+    const performDeleteUser = async () => {
+      setUsers((prev) => prev.filter((u) => u.id !== userToDelete.id));
+      try {
+        await fbDeleteUser(userToDelete.id);
+        Alert.alert('Terhapus', `Akun "${userToDelete.name}" berhasil dihapus.`);
+      } catch (e) {
+        console.error('fbDeleteUser error:', e);
+        Alert.alert('Gagal menghapus akun', 'Terjadi kesalahan saat menghapus data di database.');
+      }
+    };
+
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+      const ok = window.confirm(`Yakin ingin menghapus akun kasir "${userToDelete.name}" (${userToDelete.username})?\n\nAkun akan dihapus secara permanen dari sistem.`);
+      if (ok) {
+        performDeleteUser();
+      }
+      return;
+    }
+
     Alert.alert('Konfirmasi Hapus', `Yakin ingin menghapus akun "${userToDelete.name}" (${userToDelete.username})?`, [
       { text: 'Batal', style: 'cancel' },
       {
         text: 'Hapus',
         style: 'destructive',
-        onPress: async () => {
-          setUsers((prev) => prev.filter((u) => u.id !== userToDelete.id));
-          try {
-            await fbDeleteUser(userToDelete.id);
-          } catch (e) {
-            console.error('fbDeleteUser error:', e);
-          }
-          Alert.alert('Terhapus', `Akun "${userToDelete.name}" berhasil dihapus.`);
-        },
+        onPress: performDeleteUser,
       },
     ]);
   };

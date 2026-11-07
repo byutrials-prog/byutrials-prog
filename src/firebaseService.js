@@ -229,6 +229,7 @@ export const updateUserInDB = async (id, data) => {
 };
 
 export const deleteUserFromDB = async (id) => {
+  await authReady;
   const docRef = doc(db, 'users', id);
   await deleteDoc(docRef);
 };
