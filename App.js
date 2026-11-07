@@ -35,6 +35,7 @@ import {
   addTransaction as fbAddTransaction,
   updateTransactionAndStocks as fbUpdateTransactionAndStocks,
   addMutation as fbAddMutation,
+  cancelMutationAndRestoreStock as fbCancelMutationAndRestoreStock,
   addUser as fbAddUser,
   updateUserInDB as fbUpdateUser,
   deleteUserFromDB as fbDeleteUser,
@@ -2460,6 +2461,76 @@ export default function App() {
     }
   };
 
+  const cancelMutation = async (mutation) => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak membatalkan mutasi stok.');
+      return;
+    }
+
+    const prod = products.find((p) => p.id === mutation.productId);
+    if (!prod) {
+      Alert.alert('Error', 'Produk tidak ditemukan.');
+      return;
+    }
+
+    let restoredStock = prod.stock;
+    const qty = Number(mutation.qty) || 0;
+    if (mutation.type === 'in') {
+      // Dibatalkan: kurangi kembali stok yang sebelumnya ditambah
+      restoredStock = Math.max(0, prod.stock - qty);
+    } else if (mutation.type === 'out') {
+      // Dibatalkan: kembalikan stok yang sebelumnya dikurangi
+      restoredStock = prod.stock + Math.abs(qty);
+    } else if (mutation.type === 'koreksi') {
+      // Koreksi opname selisihnya qty; dibatalkan: kurangi kembali selisih tersebut
+      restoredStock = Math.max(0, prod.stock - qty);
+    }
+
+    setIsTransactionSaving(true);
+    try {
+      await fbCancelMutationAndRestoreStock(mutation.id, mutation.productId, restoredStock);
+      setProducts((prev) => prev.map((p) => (p.id === mutation.productId ? { ...p, stock: restoredStock } : p)));
+      setMutations((prev) => prev.filter((m) => m.id !== mutation.id));
+      Alert.alert('Mutasi Dibatalkan', `Catatan mutasi ${mutation.id} dihapus dan stok ${prod.name} diperbarui menjadi ${restoredStock} unit.`);
+    } catch (e) {
+      console.error('Cancel mutation error:', e);
+      Alert.alert('Gagal membatalkan mutasi', 'Periksa koneksi database lalu coba lagi.');
+    } finally {
+      setIsTransactionSaving(false);
+    }
+  };
+
+  const confirmCancelMutation = (mutation) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+      const ok = window.confirm(`Batalkan catatan mutasi stok ini?` +
+        `\n\nID: ${mutation.id}` +
+        `\nProduk: ${mutation.productName}` +
+        `\nJumlah: ${mutation.qty} unit` +
+        `\n\nStok akan langsung dikembalikan ke kondisi sebelum mutasi dicatat.`);
+      if (ok) {
+        cancelMutation(mutation);
+      }
+      return;
+    }
+    Alert.alert(
+      'Batalkan Mutasi Stok?',
+      `Catatan mutasi ${mutation.id} akan dibatalkan dan stok ${mutation.productName} akan langsung diperbarui kembali.`,
+      [
+        { text: 'Kembali', style: 'cancel' },
+        { text: 'Batalkan Mutasi', style: 'destructive', onPress: () => cancelMutation(mutation) },
+      ],
+    );
+  };
+
+  const cancelTransactionFromStock = (transactionId) => {
+    const tx = transactions.find((t) => t.id === transactionId);
+    if (!tx) {
+      Alert.alert('Transaksi Tidak Ditemukan', `Transaksi dengan nomor ${transactionId} tidak ditemukan.`);
+      return;
+    }
+    confirmCancelTransaction(tx);
+  };
+
   const confirmCancelTransaction = (transaction) => {
     if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
       const ok = window.confirm(`Batalkan transaksi ${transaction.id}?\n\nTransaksi akan ditandai batal dan stok barang akan otomatis dikembalikan ke inventori.`);
@@ -2489,12 +2560,17 @@ export default function App() {
         .filter((item) => item.qty > 0)
         .map((item, index) => ({
           id: `sale-${transaction.id}-${index}`,
+          transactionId: transaction.id,
+          transactionStatus: transaction.status,
+          isCancelled: transaction.status === 'cancelled',
           date: transaction.date,
           productId: item.productId,
           productName: item.name || products.find((product) => product.id === item.productId)?.name || item.productId || 'Produk tidak tersedia',
           type: 'out',
           qty: item.qty,
-          note: `Penjualan · ${transaction.id}`,
+          note: transaction.status === 'cancelled'
+            ? `Penjualan Batal · ${transaction.id}`
+            : `Penjualan · ${transaction.id}`,
           operator: transaction.cashier || 'Kasir',
           source: 'sale',
         })),
@@ -4411,27 +4487,80 @@ export default function App() {
                 const badgeLabel = item.type === 'in'
                   ? 'RESTOCK'
                   : item.type === 'out'
-                    ? item.source === 'sale' ? 'TERJUAL' : 'KELUAR'
+                    ? item.source === 'sale' ? (item.isCancelled ? 'TRANSAKSI BATAL' : 'TERJUAL') : 'KELUAR'
                     : 'OPNAME';
+                const isCancelledSale = item.source === 'sale' && item.isCancelled;
+
                 return (
-                  <View style={styles.mutationCard}>
+                  <View style={[styles.mutationCard, isCancelledSale && { opacity: 0.65, borderColor: '#ef4444' }]}>
                     <View style={styles.mutCardHeader}>
                       <Text style={styles.mutCardId}>{item.id} • {item.operator}</Text>
                       <Text style={[
                         styles.mutBadge,
-                        item.type === 'in' ? styles.mutBadgeIn : item.type === 'out' ? styles.mutBadgeOut : styles.mutBadgeKoreksi
+                        isCancelledSale
+                          ? { backgroundColor: '#7f1d1d', color: '#fca5a5' }
+                          : item.type === 'in'
+                            ? styles.mutBadgeIn
+                            : item.type === 'out'
+                              ? styles.mutBadgeOut
+                              : styles.mutBadgeKoreksi
                       ]}>
                         {badgeLabel}
                       </Text>
                     </View>
                     <Text style={styles.mutProdName}>{item.productName}</Text>
-                    <Text style={styles.mutQtyText}>
+                    <Text style={[styles.mutQtyText, isCancelledSale && { textDecorationLine: 'line-through', color: '#94a3b8' }]}>
                       Jumlah: <Text style={{ fontWeight: 'bold' }}>{quantityLabel} unit</Text>
                     </Text>
                     <Text style={styles.stockHistoryDate}>
                       {item.date ? new Date(item.date).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Tanggal tidak tersedia'}
                     </Text>
-                    <Text style={styles.mutNote}>{item.note}</Text>
+                    <Text style={[styles.mutNote, isCancelledSale && { color: '#fca5a5' }]}>{item.note}</Text>
+
+                    {/* Tombol Pembatalan Transaksi / Mutasi Stok Langsung di Halaman Stok */}
+                    {item.source === 'sale' && !item.isCancelled && (
+                      <View style={{ marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderColor: '#334155', flexDirection: 'row', justifyContent: 'flex-end' }}>
+                        <TouchableOpacity
+                          style={{
+                            minHeight: 34,
+                            paddingHorizontal: 12,
+                            borderRadius: 7,
+                            backgroundColor: '#991b1b',
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 6,
+                          }}
+                          onPress={() => cancelTransactionFromStock(item.transactionId)}
+                        >
+                          <Feather name="x-circle" size={13} color="#fff" />
+                          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
+                            Batalkan Transaksi & Kembalikan Stok
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {item.source === 'mutation' && (
+                      <View style={{ marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderColor: '#334155', flexDirection: 'row', justifyContent: 'flex-end' }}>
+                        <TouchableOpacity
+                          style={{
+                            minHeight: 34,
+                            paddingHorizontal: 12,
+                            borderRadius: 7,
+                            backgroundColor: '#b91c1c',
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 6,
+                          }}
+                          onPress={() => confirmCancelMutation(item)}
+                        >
+                          <Feather name="trash-2" size={13} color="#fff" />
+                          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
+                            Batalkan Catatan Mutasi & Pulihkan Stok
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
                 );
               }}

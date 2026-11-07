@@ -201,6 +201,18 @@ export const addMutation = async (mutation) => {
   return mutation;
 };
 
+export const cancelMutationAndRestoreStock = async (mutationId, productId, newStock) => {
+  await authReady;
+  const batch = writeBatch(db);
+  const mutationRef = doc(db, 'mutations', mutationId);
+  batch.delete(mutationRef);
+  if (productId && typeof newStock === 'number') {
+    const productRef = doc(db, 'products', productId);
+    batch.update(productRef, { stock: newStock });
+  }
+  await batch.commit();
+};
+
 // ==========================================
 // Users
 // ==========================================
