@@ -1566,35 +1566,7 @@ const INITIAL_PRODUCTS = [
 
 const INITIAL_TRANSACTIONS = [];
 
-const INITIAL_MUTATIONS = [
-  {
-    id: 'M01',
-    date: getOffsetDate(3),
-    productId: 'P70',
-    type: 'in',
-    qty: 20,
-    note: 'Restock dari distributor resmi',
-    operator: 'Admin Doni',
-  },
-  {
-    id: 'M02',
-    date: getOffsetDate(1),
-    productId: 'P14',
-    type: 'out',
-    qty: 1,
-    note: 'Botol pecah saat bongkar muat',
-    operator: 'Kasir Siti',
-  },
-  {
-    id: 'M03',
-    date: getOffsetDate(0),
-    productId: 'P01',
-    type: 'koreksi',
-    qty: -1,
-    note: 'Koreksi stok fisik opname',
-    operator: 'Admin Doni',
-  },
-];
+const INITIAL_MUTATIONS = [];
 
 export default function App() {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();

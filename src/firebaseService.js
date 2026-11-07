@@ -355,3 +355,18 @@ export const clearAllTransactionsFromDB = async () => {
   }
 };
 
+// ==========================================
+// Clear all mutations from Firestore
+// ==========================================
+export const clearAllMutationsFromDB = async () => {
+  await authReady;
+  const snap = await getDocs(mutationsCol);
+  const batchSize = 400;
+  for (let i = 0; i < snap.docs.length; i += batchSize) {
+    const batch = writeBatch(db);
+    snap.docs.slice(i, i + batchSize).forEach(docSnap => batch.delete(docSnap.ref));
+    await batch.commit();
+  }
+};
+
+
