@@ -110,7 +110,7 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'portrait',
         background_color: '#0f172a',
-        theme_color: '#6366f1',
+        theme_color: '#1e293b',
         lang: 'id',
         categories: ['business', 'finance', 'productivity'],
         icons: [

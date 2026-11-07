@@ -33,6 +33,7 @@ import {
   updateProductStock,
   batchUpdateProductStocks,
   addTransaction as fbAddTransaction,
+  updateTransactionAndStocks as fbUpdateTransactionAndStocks,
   addMutation as fbAddMutation,
   addUser as fbAddUser,
   updateUserInDB as fbUpdateUser,
@@ -2104,6 +2105,12 @@ export default function App() {
   // Period Filters
   const [selectedPeriod, setSelectedPeriod] = useState('month');
   const [reportPeriod, setReportPeriod] = useState('day');
+  const [reportsSubTab, setReportsSubTab] = useState('history'); // 'history' | 'finance'
+  const [txSearch, setTxSearch] = useState('');
+  const [editingTransaction, setEditingTransaction] = useState(null);
+  const [editedTransactionItems, setEditedTransactionItems] = useState([]);
+  const [editedTransactionCash, setEditedTransactionCash] = useState('');
+  const [isTransactionSaving, setIsTransactionSaving] = useState(false);
 
   // POS Kasir Cart & Modals
   const [cart, setCart] = useState([]);
@@ -2154,16 +2161,56 @@ export default function App() {
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
   const [currentReceipt, setCurrentReceipt] = useState(null);
 
-  const saveReceiptPng = async (receiptRef, filename) => {
+  const saveReceiptPng = async (receiptRef, filename, scrollRef) => {
     try {
       if (!receiptRef.current) throw new Error('Receipt content is not available.');
       if (Platform.OS === 'web') {
         const { toPng } = await import('html-to-image');
-        const dataUrl = await toPng(receiptRef.current, {
-          backgroundColor: '#ffffff',
-          pixelRatio: 2,
-          cacheBust: true,
-        });
+        await document.fonts?.ready;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const originalElement = receiptRef.current;
+
+        // Buat clone offscreen dengan ukuran asli penuh tanpa dipotong scroll/maxHeight
+        const clone = originalElement.cloneNode(true);
+        clone.style.position = 'fixed';
+        clone.style.top = '-99999px';
+        clone.style.left = '-99999px';
+        clone.style.width = '380px';
+        clone.style.maxWidth = '380px';
+        clone.style.height = 'auto';
+        clone.style.maxHeight = 'none';
+        clone.style.overflow = 'visible';
+        clone.style.backgroundColor = '#ffffff';
+        clone.style.zIndex = '-1000';
+        clone.style.padding = '18px 14px 28px 14px';
+        clone.style.boxSizing = 'border-box';
+        document.body.appendChild(clone);
+
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const fullHeight = Math.ceil(Math.max(clone.scrollHeight, clone.offsetHeight)) + 12;
+        const fullWidth = 380;
+
+        let dataUrl;
+        try {
+          dataUrl = await toPng(clone, {
+            backgroundColor: '#ffffff',
+            pixelRatio: 2,
+            cacheBust: true,
+            width: fullWidth,
+            height: fullHeight,
+            style: {
+              width: `${fullWidth}px`,
+              height: `${fullHeight}px`,
+              maxHeight: 'none',
+              overflow: 'visible',
+            },
+          });
+        } finally {
+          if (clone.parentNode) {
+            clone.parentNode.removeChild(clone);
+          }
+        }
+
         const downloadLink = document.createElement('a');
         downloadLink.href = dataUrl;
         downloadLink.download = filename;
@@ -2174,10 +2221,11 @@ export default function App() {
       }
 
       const { captureRef } = await import('react-native-view-shot');
-      const imageUri = await captureRef(receiptRef, {
+      const imageUri = await captureRef(scrollRef?.current || receiptRef.current, {
         format: 'png',
         quality: 1,
         result: 'tmpfile',
+        snapshotContentContainer: true,
       });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(imageUri, {
@@ -2196,6 +2244,239 @@ export default function App() {
 
   // CRUD Search
   const [crudSearch, setCrudSearch] = useState('');
+
+  const activeTransactions = useMemo(
+    () => transactions.filter((transaction) => transaction.status !== 'cancelled'),
+    [transactions],
+  );
+
+  const transactionHistory = useMemo(
+    () => [...transactions].sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0)),
+    [transactions],
+  );
+
+  const filteredTransactions = useMemo(() => {
+    if (!txSearch.trim()) return transactionHistory;
+    const q = txSearch.trim().toLowerCase();
+    return transactionHistory.filter((tx) => {
+      const matchId = tx.id && tx.id.toLowerCase().includes(q);
+      const matchCashier = tx.cashier && tx.cashier.toLowerCase().includes(q);
+      const matchCust = tx.customer?.name && tx.customer.name.toLowerCase().includes(q);
+      const matchMethod = tx.method && tx.method.toLowerCase().includes(q);
+      const matchItem = (tx.items || []).some(
+        (it) => (it.name && it.name.toLowerCase().includes(q)) || (it.productId && String(it.productId).toLowerCase().includes(q))
+      );
+      return matchId || matchCashier || matchCust || matchMethod || matchItem;
+    });
+  }, [transactionHistory, txSearch]);
+
+  const openReceiptForTransaction = (transaction) => {
+    setCurrentReceipt(transaction);
+    setIsReceiptModalOpen(true);
+  };
+
+  const getTransactionStockDemand = (items = []) => {
+    const demand = new Map();
+    items.forEach((item) => {
+      const components = item.components?.length
+        ? item.components
+        : [{ productId: item.productId, qty: 1 }];
+      components.forEach((component) => {
+        if (!component.productId) return;
+        const currentQty = demand.get(component.productId) || 0;
+        demand.set(
+          component.productId,
+          currentQty + (Number(component.qty) || 0) * (Number(item.qty) || 0),
+        );
+      });
+    });
+    return demand;
+  };
+
+  const openTransactionEditor = (transaction) => {
+    if (transaction.status === 'cancelled') return;
+    setEditingTransaction(transaction);
+    setEditedTransactionItems((transaction.items || []).map((item) => ({
+      ...item,
+      editQty: String(item.qty || 0),
+    })));
+    setEditedTransactionCash(String(transaction.cashAmount ?? transaction.total ?? 0));
+  };
+
+  const editedTransactionTotal = useMemo(() => {
+    if (!editingTransaction) return 0;
+    const items = editedTransactionItems.filter((item) => Number(item.editQty) > 0);
+    const subtotal = items.reduce(
+      (sum, item) => sum + (Number(item.regularPrice ?? item.price) || 0) * Number(item.editQty),
+      0,
+    );
+    const promotionDiscount = items.reduce(
+      (sum, item) => sum + Math.max(0, (Number(item.regularPrice ?? item.price) || 0) - (Number(item.price) || 0)) * Number(item.editQty),
+      0,
+    );
+    const discountedSubtotal = Math.max(0, subtotal - promotionDiscount);
+    const discountValue = Number(editingTransaction.discountValue) || 0;
+    const discountAmount = Math.min(
+      discountedSubtotal,
+      editingTransaction.discountType === 'percent'
+        ? (discountedSubtotal * discountValue) / 100
+        : discountValue,
+    );
+    return Math.max(0, discountedSubtotal - discountAmount + (Number(editingTransaction.taxAmount) || 0));
+  }, [editingTransaction, editedTransactionItems]);
+
+  const saveTransactionEdit = async () => {
+    if (!editingTransaction || isTransactionSaving) return;
+
+    const hasInvalidQty = editedTransactionItems.some(
+      (item) => !/^\d+$/.test(item.editQty.trim()),
+    );
+    if (hasInvalidQty) {
+      Alert.alert('Jumlah tidak valid', 'Masukkan jumlah barang berupa bilangan bulat nol atau lebih.');
+      return;
+    }
+
+    const updatedItems = editedTransactionItems
+      .map(({ editQty, ...item }) => ({ ...item, qty: Number(editQty) }))
+      .filter((item) => item.qty > 0);
+    if (!updatedItems.length) {
+      Alert.alert('Transaksi kosong', 'Sisakan minimal satu barang atau batalkan transaksi.');
+      return;
+    }
+
+    const oldDemand = getTransactionStockDemand(editingTransaction.items || []);
+    const newDemand = getTransactionStockDemand(updatedItems);
+    const stockUpdates = [];
+    for (const productId of new Set([...oldDemand.keys(), ...newDemand.keys()])) {
+      const stockDelta = (oldDemand.get(productId) || 0) - (newDemand.get(productId) || 0);
+      if (!stockDelta) continue;
+      const product = products.find((candidate) => candidate.id === productId);
+      if (!product) {
+        Alert.alert('Produk tidak tersedia', `Stok produk ${productId} tidak ditemukan; transaksi tidak diubah.`);
+        return;
+      }
+      const newStock = (Number(product.stock) || 0) + stockDelta;
+      if (newStock < 0) {
+        Alert.alert('Stok Tidak Cukup', `${product.name} hanya tersedia ${product.stock} unit.`);
+        return;
+      }
+      stockUpdates.push({ id: productId, newStock });
+    }
+
+    const subtotal = updatedItems.reduce(
+      (sum, item) => sum + (Number(item.regularPrice ?? item.price) || 0) * item.qty,
+      0,
+    );
+    const promotionDiscountAmount = updatedItems.reduce(
+      (sum, item) => sum + Math.max(0, (Number(item.regularPrice ?? item.price) || 0) - (Number(item.price) || 0)) * item.qty,
+      0,
+    );
+    const discountedSubtotal = Math.max(0, subtotal - promotionDiscountAmount);
+    const discountValue = Number(editingTransaction.discountValue) || 0;
+    const discountAmount = Math.min(
+      discountedSubtotal,
+      editingTransaction.discountType === 'percent'
+        ? (discountedSubtotal * discountValue) / 100
+        : discountValue,
+    );
+    const total = Math.max(0, discountedSubtotal - discountAmount + (Number(editingTransaction.taxAmount) || 0));
+    const cashAmount = editingTransaction.method === 'Tunai'
+      ? Number(editedTransactionCash)
+      : total;
+    if (!Number.isFinite(cashAmount) || cashAmount < total) {
+      Alert.alert('Pembayaran Kurang', 'Uang yang diterima harus sama dengan atau lebih besar dari total transaksi.');
+      return;
+    }
+
+    const updatedTransaction = {
+      ...editingTransaction,
+      items: updatedItems,
+      subtotal,
+      promotionDiscountAmount,
+      discountAmount,
+      total,
+      cashAmount,
+      changeAmount: Math.max(0, cashAmount - total),
+      updatedAt: new Date().toISOString(),
+      updatedBy: currentUser?.name || 'Pengguna',
+    };
+    const { id, ...transactionData } = updatedTransaction;
+
+    setIsTransactionSaving(true);
+    try {
+      await fbUpdateTransactionAndStocks(id, transactionData, stockUpdates);
+      setProducts((previous) => previous.map((product) => {
+        const stockUpdate = stockUpdates.find((update) => update.id === product.id);
+        return stockUpdate ? { ...product, stock: stockUpdate.newStock } : product;
+      }));
+      setTransactions((previous) => previous.map((transaction) => (
+        transaction.id === id ? updatedTransaction : transaction
+      )));
+      setEditingTransaction(null);
+      Alert.alert('Transaksi diperbarui', 'Perubahan transaksi dan penyesuaian stok berhasil disimpan.');
+    } catch (error) {
+      console.error('Firestore update transaction error:', error);
+      Alert.alert('Gagal menyimpan transaksi', 'Perubahan tidak tersimpan. Periksa koneksi database lalu coba lagi.');
+    } finally {
+      setIsTransactionSaving(false);
+    }
+  };
+
+  const cancelTransaction = async (transaction) => {
+    if (transaction.status === 'cancelled' || isTransactionSaving) return;
+
+    const stockDemand = getTransactionStockDemand(transaction.items || []);
+    const stockUpdates = [];
+    stockDemand.forEach((qty, productId) => {
+      const product = products.find((candidate) => candidate.id === productId);
+      if (product && qty > 0) {
+        stockUpdates.push({ id: productId, newStock: (Number(product.stock) || 0) + qty });
+      }
+    });
+    const cancelledTransaction = {
+      ...transaction,
+      status: 'cancelled',
+      cancelledAt: new Date().toISOString(),
+      cancelledBy: currentUser?.name || 'Pengguna',
+    };
+    const { id, ...transactionData } = cancelledTransaction;
+
+    setIsTransactionSaving(true);
+    try {
+      await fbUpdateTransactionAndStocks(id, transactionData, stockUpdates);
+      setProducts((previous) => previous.map((product) => {
+        const stockUpdate = stockUpdates.find((update) => update.id === product.id);
+        return stockUpdate ? { ...product, stock: stockUpdate.newStock } : product;
+      }));
+      setTransactions((previous) => previous.map((item) => (
+        item.id === id ? cancelledTransaction : item
+      )));
+      Alert.alert('Transaksi dibatalkan', `Transaksi ${id} berhasil dibatalkan dan stok dikembalikan.`);
+    } catch (error) {
+      console.error('Firestore cancel transaction error:', error);
+      Alert.alert('Gagal membatalkan transaksi', 'Perubahan tidak tersimpan. Periksa koneksi database lalu coba lagi.');
+    } finally {
+      setIsTransactionSaving(false);
+    }
+  };
+
+  const confirmCancelTransaction = (transaction) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.confirm) {
+      const ok = window.confirm(`Batalkan transaksi ${transaction.id}?\n\nTransaksi akan ditandai batal dan stok barang akan otomatis dikembalikan ke inventori.`);
+      if (ok) {
+        cancelTransaction(transaction);
+      }
+      return;
+    }
+    Alert.alert(
+      'Batalkan transaksi?',
+      `Transaksi ${transaction.id} akan ditandai batal dan stok barang dikembalikan.`,
+      [
+        { text: 'Kembali', style: 'cancel' },
+        { text: 'Batalkan Transaksi', style: 'destructive', onPress: () => cancelTransaction(transaction) },
+      ],
+    );
+  };
 
   const stockHistory = useMemo(() => {
     const mutationEntries = mutations.map((mutation) => ({
@@ -4160,119 +4441,383 @@ export default function App() {
 
         {activeTab === 'reports' && (
           <ScrollView style={styles.tabContent} contentContainerStyle={{ padding: 16, paddingBottom: CONTENT_BOTTOM_PADDING }}>
-            <View style={styles.reportToolbar}>
-              <Text style={styles.sectionTitle}>{isSuperAdmin ? 'Laporan Keuangan' : 'Riwayat Transaksi Penjualan'}</Text>
-              <View style={styles.reportPeriodRow}>
-                {[
-                  { id: 'day', label: 'Harian' },
-                  { id: 'month', label: 'Bulanan' },
-                ].map((period) => (
-                  <TouchableOpacity
-                    key={period.id}
-                    style={[styles.reportPeriodBtn, reportPeriod === period.id && styles.reportPeriodBtnActive]}
-                    onPress={() => setReportPeriod(period.id)}
-                  >
-                    <Text style={[styles.reportPeriodText, reportPeriod === period.id && styles.reportPeriodTextActive]}>{period.label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              <Text style={styles.reportPeriodLabel}>{reportData.periodLabel}</Text>
-              <View style={styles.reportDownloadRow}>
-                {isSuperAdmin && (
-                  <TouchableOpacity
-                    style={[styles.reportDownloadBtn, styles.reportDownloadBtnFinancial, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                    onPress={() => runPdfExport(downloadFinancialPdf)}
-                    disabled={!pdfModulesReady || pdfExporting}
-                  >
-                    <Feather name="file-text" size={15} color="#fff" />
-                    <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'Buat PDF Lengkap'}</Text>
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  style={[styles.reportDownloadBtn, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                  onPress={() => runPdfExport(downloadSalesReport)}
-                  disabled={!pdfModulesReady || pdfExporting}
-                >
-                  <Feather name="download" size={15} color="#fff" />
-                  <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Penjualan'}</Text>
-                </TouchableOpacity>
-                {isSuperAdmin && (
-                  <TouchableOpacity
-                    style={[styles.reportDownloadBtn, styles.reportDownloadBtnStock, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                    onPress={() => runPdfExport(downloadStockReport)}
-                    disabled={!pdfModulesReady || pdfExporting}
-                  >
-                    <Feather name="download" size={15} color="#fff" />
-                    <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Stok'}</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-              {!!pdfExportStatus && <Text style={styles.reportPdfStatus}>{pdfExportStatus}</Text>}
-            </View>
-            <Text style={styles.reportHint}>{isSuperAdmin ? 'PDF mengikuti periode terpilih dan berisi ringkasan keuangan, analisis produk, pembayaran, serta rincian transaksi.' : 'Berikut daftar riwayat transaksi penjualan yang tercatat pada sistem.'}</Text>
-
+            {/* Header Riwayat & Laporan Sub-Tab Switcher untuk Super Admin */}
             {isSuperAdmin && (
-              <View style={styles.reportMetricGrid}>
-                {[
-                  ['Penerimaan Penjualan', reportData.revenue],
-                  ['Arus Kas Bersih Estimasi', reportData.estimatedNetCashFlow],
-                  ['Laba Kotor', reportData.grossProfit],
-                  ['Laba Bersih Estimasi', reportData.netProfit],
-                  ['HPP Terjual', reportData.costOfGoodsSold],
-                  ['Belanja Stok', reportData.stockPurchaseCashOut],
-                ].map(([label, value]) => (
-                  <View key={label} style={styles.reportMetric}>
-                    <Text style={styles.reportMetricLabel}>{label}</Text>
-                    <Text style={styles.reportMetricValue}>{formatRp(value)}</Text>
-                  </View>
-                ))}
+              <View style={{ flexDirection: 'row', backgroundColor: '#1e293b', borderRadius: 10, padding: 4, marginBottom: 14 }}>
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    minHeight: 38,
+                    borderRadius: 8,
+                    backgroundColor: reportsSubTab === 'history' ? '#10b981' : 'transparent',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 6,
+                  }}
+                  onPress={() => setReportsSubTab('history')}
+                >
+                  <MaterialCommunityIcons name="history" size={17} color={reportsSubTab === 'history' ? '#fff' : '#94a3b8'} />
+                  <Text style={{ color: reportsSubTab === 'history' ? '#fff' : '#94a3b8', fontWeight: '700', fontSize: 13 }}>
+                    Riwayat Transaksi ({transactionHistory.length})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    minHeight: 38,
+                    borderRadius: 8,
+                    backgroundColor: reportsSubTab === 'finance' ? '#0284c7' : 'transparent',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexDirection: 'row',
+                    gap: 6,
+                  }}
+                  onPress={() => setReportsSubTab('finance')}
+                >
+                  <MaterialCommunityIcons name="finance" size={17} color={reportsSubTab === 'finance' ? '#fff' : '#94a3b8'} />
+                  <Text style={{ color: reportsSubTab === 'finance' ? '#fff' : '#94a3b8', fontWeight: '700', fontSize: 13 }}>
+                    Laporan Keuangan
+                  </Text>
+                </TouchableOpacity>
               </View>
             )}
 
-            <Text style={styles.sectionTitle}>Ringkasan Penjualan Produk</Text>
-            {reportData.soldList.length ? reportData.soldList.map((item) => (
-              <View key={item.id} style={styles.reportDataRow}>
-                <Text style={styles.reportDataName}>{item.name} x{item.qty}</Text>
-                <Text style={styles.reportTotal}>{formatRp(item.total)}</Text>
-              </View>
-            )) : <Text style={styles.reportEmpty}>Belum ada produk terjual pada periode ini.</Text>}
-
-            <Text style={styles.sectionTitle}>Produk Tidak Terjual ({reportData.unsoldProducts.length})</Text>
-            {reportData.unsoldProducts.slice(0, 20).map((item) => (
-              <View key={item.id} style={styles.reportDataRow}>
-                <Text style={styles.reportDataName}>{item.name}</Text>
-                <Text style={styles.reportMethod}>Stok {item.stock}</Text>
-              </View>
-            ))}
-            {reportData.unsoldProducts.length > 20 && <Text style={styles.reportEmpty}>Daftar lengkap tersedia di PDF.</Text>}
-
-            <Text style={styles.sectionTitle}>Metode Pembayaran</Text>
-            {reportData.paymentSummary.length ? reportData.paymentSummary.map((item) => (
-              <View key={item.method} style={styles.reportDataRow}>
-                <Text style={styles.reportDataName}>{item.method} ({item.count} transaksi)</Text>
-                <Text style={styles.reportTotal}>{formatRp(item.total)}</Text>
-              </View>
-            )) : <Text style={styles.reportEmpty}>Belum ada pembayaran pada periode ini.</Text>}
-
-            <Text style={styles.sectionTitle}>Rincian Transaksi</Text>
-
-            {reportData.periodTransactions.map((tx) => (
-              <View key={tx.id} style={styles.reportCard}>
-                <View style={styles.reportHeader}>
-                  <Text style={styles.reportTxId}>{tx.id} • {tx.cashier}</Text>
-                  <Text style={styles.reportTotal}>{formatRp(tx.total)}</Text>
+            {/* TAB KEUANGAN (Hanya jika Super Admin & reportsSubTab === 'finance') */}
+            {isSuperAdmin && reportsSubTab === 'finance' && (
+              <>
+                <View style={styles.reportToolbar}>
+                  <Text style={styles.sectionTitle}>Laporan Keuangan</Text>
+                  <View style={styles.reportPeriodRow}>
+                    {[
+                      { id: 'day', label: 'Harian' },
+                      { id: 'month', label: 'Bulanan' },
+                    ].map((period) => (
+                      <TouchableOpacity
+                        key={period.id}
+                        style={[styles.reportPeriodBtn, reportPeriod === period.id && styles.reportPeriodBtnActive]}
+                        onPress={() => setReportPeriod(period.id)}
+                      >
+                        <Text style={[styles.reportPeriodText, reportPeriod === period.id && styles.reportPeriodTextActive]}>{period.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <Text style={styles.reportPeriodLabel}>{reportData.periodLabel}</Text>
+                  <View style={styles.reportDownloadRow}>
+                    <TouchableOpacity
+                      style={[styles.reportDownloadBtn, styles.reportDownloadBtnFinancial, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                      onPress={() => runPdfExport(downloadFinancialPdf)}
+                      disabled={!pdfModulesReady || pdfExporting}
+                    >
+                      <Feather name="file-text" size={15} color="#fff" />
+                      <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'Buat PDF Lengkap'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.reportDownloadBtn, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                      onPress={() => runPdfExport(downloadSalesReport)}
+                      disabled={!pdfModulesReady || pdfExporting}
+                    >
+                      <Feather name="download" size={15} color="#fff" />
+                      <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Penjualan'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.reportDownloadBtn, styles.reportDownloadBtnStock, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                      onPress={() => runPdfExport(downloadStockReport)}
+                      disabled={!pdfModulesReady || pdfExporting}
+                    >
+                      <Feather name="download" size={15} color="#fff" />
+                      <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Stok'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {!!pdfExportStatus && <Text style={styles.reportPdfStatus}>{pdfExportStatus}</Text>}
                 </View>
-                <Text style={styles.reportMethod}>Metode: {tx.method}</Text>
-                <View style={styles.reportItems}>
-                  {tx.items.map((i, idx) => (
-                    <Text key={idx} style={styles.reportItemText}>• {i.name} (x{i.qty}) = {formatRp(i.price * i.qty)}</Text>
+
+                <Text style={styles.reportHint}>
+                  PDF mengikuti periode terpilih dan berisi ringkasan keuangan, analisis produk, pembayaran, serta rincian transaksi.
+                </Text>
+
+                <View style={styles.reportMetricGrid}>
+                  {[
+                    ['Penerimaan Penjualan', reportData.revenue],
+                    ['Arus Kas Bersih Estimasi', reportData.estimatedNetCashFlow],
+                    ['Laba Kotor', reportData.grossProfit],
+                    ['Laba Bersih Estimasi', reportData.netProfit],
+                    ['HPP Terjual', reportData.costOfGoodsSold],
+                    ['Belanja Stok', reportData.stockPurchaseCashOut],
+                  ].map(([label, value]) => (
+                    <View key={label} style={styles.reportMetric}>
+                      <Text style={styles.reportMetricLabel}>{label}</Text>
+                      <Text style={styles.reportMetricValue}>{formatRp(value)}</Text>
+                    </View>
                   ))}
                 </View>
-              </View>
-            ))}
+
+                <Text style={styles.sectionTitle}>Ringkasan Penjualan Produk</Text>
+                {reportData.soldList.length ? reportData.soldList.map((item) => (
+                  <View key={item.id} style={styles.reportDataRow}>
+                    <Text style={styles.reportDataName}>{item.name} x{item.qty}</Text>
+                    <Text style={styles.reportTotal}>{formatRp(item.total)}</Text>
+                  </View>
+                )) : <Text style={styles.reportEmpty}>Belum ada produk terjual pada periode ini.</Text>}
+
+                <Text style={styles.sectionTitle}>Produk Tidak Terjual ({reportData.unsoldProducts.length})</Text>
+                {reportData.unsoldProducts.slice(0, 20).map((item) => (
+                  <View key={item.id} style={styles.reportDataRow}>
+                    <Text style={styles.reportDataName}>{item.name}</Text>
+                    <Text style={styles.reportMethod}>Stok {item.stock}</Text>
+                  </View>
+                ))}
+                {reportData.unsoldProducts.length > 20 && <Text style={styles.reportEmpty}>Daftar lengkap tersedia di PDF.</Text>}
+
+                <Text style={styles.sectionTitle}>Metode Pembayaran</Text>
+                {reportData.paymentSummary.length ? reportData.paymentSummary.map((item) => (
+                  <View key={item.method} style={styles.reportDataRow}>
+                    <Text style={styles.reportDataName}>{item.method} ({item.count} transaksi)</Text>
+                    <Text style={styles.reportTotal}>{formatRp(item.total)}</Text>
+                  </View>
+                )) : <Text style={styles.reportEmpty}>Belum ada pembayaran pada periode ini.</Text>}
+              </>
+            )}
+
+            {/* TAB RIWAYAT TRANSAKSI (Bisa diakses Kasir & Super Admin) */}
+            {(!isSuperAdmin || reportsSubTab === 'history') && (
+              <>
+                <View style={{ marginBottom: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                  <Text style={styles.sectionTitle}>
+                    Riwayat Transaksi Penjualan ({filteredTransactions.length})
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.reportDownloadBtn, { marginVertical: 0, paddingHorizontal: 12, height: 36 }, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
+                    onPress={() => runPdfExport(downloadSalesReport)}
+                    disabled={!pdfModulesReady || pdfExporting}
+                  >
+                    <Feather name="download" size={14} color="#fff" />
+                    <Text style={[styles.reportDownloadText, { fontSize: 12 }]}>{pdfExporting ? 'Membuat...' : 'Download PDF'}</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Search Bar Transaksi */}
+                <View style={[styles.searchBox, { marginBottom: 14 }]}>
+                  <Feather name="search" size={16} color="#94a3b8" style={{ marginRight: 8 }} />
+                  <TextInput
+                    style={styles.searchInput}
+                    placeholder="Cari ID transaksi, kasir, produk, pembayaran..."
+                    placeholderTextColor="#64748b"
+                    value={txSearch}
+                    onChangeText={setTxSearch}
+                  />
+                  {!!txSearch && (
+                    <TouchableOpacity onPress={() => setTxSearch('')}>
+                      <Feather name="x" size={16} color="#94a3b8" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {filteredTransactions.length ? filteredTransactions.map((tx) => {
+                  const isCancelled = tx.status === 'cancelled';
+                  return (
+                    <View key={tx.id} style={[styles.reportCard, isCancelled && { opacity: 0.65, borderColor: '#ef4444' }]}>
+                      <View style={styles.reportHeader}>
+                        <View style={{ flex: 1, paddingRight: 8 }}>
+                          <Text style={styles.reportTxId}>{tx.id} • {tx.cashier || 'Kasir'}</Text>
+                          {!!tx.customer?.name && (
+                            <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '600', marginTop: 2 }}>
+                              Pelanggan: {tx.customer.name}
+                            </Text>
+                          )}
+                        </View>
+                        <Text style={[styles.reportTotal, isCancelled && { color: '#f87171' }]}>
+                          {isCancelled ? 'DIBATALKAN' : formatRp(tx.total)}
+                        </Text>
+                      </View>
+
+                      <Text style={styles.reportMethod}>
+                        {tx.date ? new Date(tx.date).toLocaleString('id-ID') : 'Tanggal tidak tersedia'} · {tx.method || 'Pembayaran'}
+                      </Text>
+
+                      <View style={styles.reportItems}>
+                        {(tx.items || []).map((item, index) => (
+                          <Text key={`${item.productId || item.name}-${index}`} style={styles.reportItemText}>
+                            • {item.name || item.productId} (x{item.qty}) = {formatRp((item.price || 0) * (item.qty || 0))}
+                          </Text>
+                        ))}
+                      </View>
+
+                      {isCancelled && (
+                        <View style={{ marginTop: 8, padding: 8, backgroundColor: 'rgba(239,68,68,0.12)', borderRadius: 6 }}>
+                          <Text style={{ color: '#fca5a5', fontSize: 12, fontWeight: '600' }}>
+                            Dibatalkan: {tx.cancelledAt ? new Date(tx.cancelledAt).toLocaleString('id-ID') : ''}
+                            {tx.cancelledBy ? ` oleh ${tx.cancelledBy}` : ''}
+                          </Text>
+                          <Text style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>
+                            Stok barang telah otomatis dipulihkan ke inventori.
+                          </Text>
+                        </View>
+                      )}
+
+                      {/* Tombol Aksi Transaksi: Buka Struk / Edit / Batalkan */}
+                      <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                        <TouchableOpacity
+                          style={{
+                            flex: 1,
+                            minWidth: 90,
+                            minHeight: 38,
+                            borderRadius: 8,
+                            backgroundColor: '#047857',
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 6,
+                          }}
+                          onPress={() => openReceiptForTransaction(tx)}
+                        >
+                          <Feather name="file-text" size={14} color="#fff" />
+                          <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>Struk / PNG</Text>
+                        </TouchableOpacity>
+
+                        {!isCancelled && (
+                          <>
+                            <TouchableOpacity
+                              style={{
+                                flex: 1,
+                                minWidth: 80,
+                                minHeight: 38,
+                                borderRadius: 8,
+                                backgroundColor: '#1d4ed8',
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: 6,
+                              }}
+                              onPress={() => openTransactionEditor(tx)}
+                            >
+                              <Feather name="edit-2" size={14} color="#fff" />
+                              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>Edit</Text>
+                            </TouchableOpacity>
+
+                            <TouchableOpacity
+                              style={{
+                                flex: 1,
+                                minWidth: 85,
+                                minHeight: 38,
+                                borderRadius: 8,
+                                backgroundColor: '#991b1b',
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: 6,
+                              }}
+                              onPress={() => confirmCancelTransaction(tx)}
+                            >
+                              <Feather name="x-circle" size={14} color="#fff" />
+                              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>Batalkan</Text>
+                            </TouchableOpacity>
+                          </>
+                        )}
+                      </View>
+                    </View>
+                  );
+                }) : (
+                  <Text style={styles.reportEmpty}>
+                    {txSearch ? 'Tidak ada transaksi yang cocok dengan pencarian.' : 'Belum ada riwayat transaksi.'}
+                  </Text>
+                )}
+              </>
+            )}
           </ScrollView>
         )}
       </View>
+
+      {/* Modal Edit Transaksi */}
+      <Modal
+        visible={!!editingTransaction}
+        animationType="slide"
+        transparent
+        onRequestClose={() => {
+          if (!isTransactionSaving) setEditingTransaction(null);
+        }}
+      >
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View
+            style={[styles.modalBox, { maxHeight: '90%', maxWidth: 520 }]}
+            className={Platform.OS === 'web' ? 'app-modal-box' : undefined}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Transaksi</Text>
+              <TouchableOpacity disabled={isTransactionSaving} onPress={() => setEditingTransaction(null)}>
+                <Feather name="x" size={20} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+            <Text style={{ color: '#94a3b8', fontSize: 12, marginBottom: 12 }}>
+              {editingTransaction?.id} · Ubah jumlah barang; isi 0 untuk menghapus barang dari transaksi.
+            </Text>
+            <ScrollView keyboardShouldPersistTaps="handled">
+              {editedTransactionItems.map((item, index) => (
+                <View
+                  key={`${item.productId || item.name}-${index}`}
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderColor: '#334155' }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#f8fafc', fontSize: 13, fontWeight: '700' }}>{item.name || item.productId}</Text>
+                    <Text style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>
+                      Harga: {formatRp(item.price)} · Subtotal: {formatRp((item.price || 0) * (Number(item.editQty) || 0))}
+                    </Text>
+                  </View>
+                  <View style={{ width: 85 }}>
+                    <TextInput
+                      style={[styles.prodInput, { textAlign: 'center', paddingHorizontal: 6, minHeight: 40 }]}
+                      keyboardType="numeric"
+                      value={item.editQty}
+                      onChangeText={(val) => {
+                        const cleaned = val.replace(/[^0-9]/g, '');
+                        setEditedTransactionItems((prev) => prev.map((curr, idx) => (
+                          idx === index ? { ...curr, editQty: cleaned } : curr
+                        )));
+                      }}
+                    />
+                  </View>
+                </View>
+              ))}
+
+              <View style={{ marginTop: 14, padding: 12, backgroundColor: '#0f172a', borderRadius: 8 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <Text style={{ color: '#94a3b8', fontSize: 13 }}>Total Baru:</Text>
+                  <Text style={{ color: '#10b981', fontSize: 15, fontWeight: '700' }}>{formatRp(editedTransactionTotal)}</Text>
+                </View>
+                {editingTransaction?.method === 'Tunai' && (
+                  <View style={{ marginTop: 8 }}>
+                    <Text style={{ color: '#94a3b8', fontSize: 12, marginBottom: 4 }}>Uang Diterima:</Text>
+                    <TextInput
+                      style={[styles.prodInput, { minHeight: 40 }]}
+                      keyboardType="numeric"
+                      value={editedTransactionCash}
+                      onChangeText={(val) => setEditedTransactionCash(val.replace(/[^0-9]/g, ''))}
+                    />
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 14 }}>
+              <TouchableOpacity
+                style={[styles.cancelBtn, { flex: 1, marginTop: 0 }]}
+                disabled={isTransactionSaving}
+                onPress={() => setEditingTransaction(null)}
+              >
+                <Text style={styles.cancelBtnText}>Kembali</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.receiptDoneBtn, { flex: 1, marginTop: 0, backgroundColor: '#047857', opacity: isTransactionSaving ? 0.6 : 1 }]}
+                disabled={isTransactionSaving}
+                onPress={saveTransactionEdit}
+              >
+                <Text style={styles.receiptDoneBtnText}>{isTransactionSaving ? 'Menyimpan...' : 'Simpan Perubahan'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Modal Shift Receipt */}
       <Modal visible={isShiftReceiptOpen} animationType="slide" transparent>

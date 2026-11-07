@@ -18,7 +18,7 @@
   <!-- ===================== iOS PWA META TAGS ===================== -->
   <!-- Membuat app berjalan full-screen seperti native app di iOS -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="Tipsy Point" />
   <meta name="mobile-web-app-capable" content="yes" />
 
@@ -129,6 +129,58 @@
       position: relative;
       min-height: 0;
       min-width: 0;
+    }
+
+    /* Standalone iOS PWA (Add to Home Screen) adjustments */
+    @supports (-webkit-touch-callout: none) {
+      body {
+        height: -webkit-fill-available;
+      }
+      #root {
+        height: -webkit-fill-available;
+      }
+    }
+
+    html.pwa-ios-standalone {
+      height: 100%;
+      height: -webkit-fill-available;
+    }
+
+    html.pwa-ios-standalone body {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100vw;
+      height: 100%;
+      height: -webkit-fill-available;
+      overflow: hidden;
+      padding: 0 !important;
+    }
+
+    html.pwa-ios-standalone #root {
+      width: 100%;
+      height: 100%;
+      height: -webkit-fill-available;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Standalone Safe Area Header & Nav tuning */
+    html.pwa-ios-standalone .app-header {
+      padding-top: max(env(safe-area-inset-top, 0px), 12px) !important;
+      height: calc(56px + max(env(safe-area-inset-top, 0px), 12px)) !important;
+    }
+
+    html.pwa-ios-standalone .app-bottom-nav {
+      height: calc(64px + max(env(safe-area-inset-bottom, 0px), 16px)) !important;
+      padding-bottom: max(env(safe-area-inset-bottom, 0px), 16px) !important;
+    }
+
+    html.pwa-ios-standalone .app-cart-fab {
+      bottom: calc(76px + max(env(safe-area-inset-bottom, 0px), 16px)) !important;
     }
 
     /* Mencegah Safari iOS auto-zoom ketika klik/tap form input atau search */
@@ -294,7 +346,9 @@
     }
 
     // iOS: Deteksi mode standalone (sudah diinstall)
-    if (window.navigator.standalone === true) {
+    const isIosDevice = /iPad|iPhone|iPod/.test(window.navigator.userAgent)
+      || (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
+    if (isIosDevice && (window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches)) {
       console.log('[PWA] Berjalan sebagai app iOS standalone');
       document.documentElement.classList.add('pwa-ios-standalone');
     }

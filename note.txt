@@ -1,5 +1,3 @@
 npx eas-cli update --channel preview --platform android --message "Perubahan aplikasi"
 
-Pilih preview
-
 eas build --platform android --profile preview

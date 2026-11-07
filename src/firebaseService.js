@@ -171,6 +171,22 @@ export const addTransaction = async (tx) => {
   return tx;
 };
 
+export const updateTransactionAndStocks = async (id, transactionData, stockUpdates) => {
+  await authReady;
+  const batch = writeBatch(db);
+  const transactionRef = doc(db, 'transactions', id);
+  batch.update(transactionRef, {
+    ...transactionData,
+    date: Timestamp.fromDate(
+      transactionData.date instanceof Date ? transactionData.date : new Date(transactionData.date),
+    ),
+  });
+  stockUpdates.forEach(({ id: productId, newStock }) => {
+    batch.update(doc(db, 'products', productId), { stock: newStock });
+  });
+  await batch.commit();
+};
+
 // ==========================================
 // Mutations (Stock In/Out/Correction)
 // ==========================================
