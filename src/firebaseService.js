@@ -17,6 +17,7 @@ import {
   getDoc,
   getDocs,
   writeBatch,
+  runTransaction,
   Timestamp,
 } from 'firebase/firestore';
 
@@ -146,6 +147,35 @@ export const updateProduct = async (id, data) => {
   await updateDoc(docRef, data);
 };
 
+export const updateProductAndAddStock = async (id, data, mutation) => {
+  await authReady;
+  const productRef = doc(db, 'products', id);
+  const mutationRef = doc(db, 'mutations', mutation.id);
+
+  return runTransaction(db, async (transaction) => {
+    const productSnapshot = await transaction.get(productRef);
+    if (!productSnapshot.exists()) {
+      throw new Error('Produk tidak ditemukan.');
+    }
+
+    const currentStock = Number(productSnapshot.data().stock) || 0;
+    const mutationSnapshot = await transaction.get(mutationRef);
+    const newStock = mutationSnapshot.exists()
+      ? currentStock
+      : currentStock + mutation.qty;
+
+    transaction.update(productRef, { ...data, stock: newStock });
+    if (!mutationSnapshot.exists()) {
+      transaction.set(mutationRef, {
+        ...mutation,
+        date: Timestamp.fromDate(mutation.date instanceof Date ? mutation.date : new Date(mutation.date)),
+      });
+    }
+
+    return newStock;
+  });
+};
+
 export const deleteProductFromDB = async (id) => {
   const docRef = doc(db, 'products', id);
   await deleteDoc(docRef);
@@ -199,6 +229,60 @@ export const addMutation = async (mutation) => {
   };
   await setDoc(docRef, mutData);
   return mutation;
+};
+
+export const addStockMutationAndUpdateStock = async (mutation, targetStock) => {
+  await authReady;
+  const productRef = doc(db, 'products', mutation.productId);
+  const mutationRef = doc(db, 'mutations', mutation.id);
+
+  return runTransaction(db, async (transaction) => {
+    const productSnapshot = await transaction.get(productRef);
+    if (!productSnapshot.exists()) {
+      throw new Error('Produk tidak ditemukan.');
+    }
+
+    const currentStock = Number(productSnapshot.data().stock) || 0;
+    const existingMutation = await transaction.get(mutationRef);
+    if (existingMutation.exists()) {
+      return { newStock: currentStock, qty: Number(existingMutation.data().qty) || 0 };
+    }
+
+    let newStock;
+    let mutationQty = mutation.qty;
+
+    if (mutation.type === 'koreksi') {
+      if (!Number.isInteger(targetStock) || targetStock < 0) {
+        throw new Error('Jumlah stok koreksi tidak valid.');
+      }
+      newStock = targetStock;
+      mutationQty = newStock - currentStock;
+    } else if (mutation.type === 'in' || mutation.type === 'out') {
+      if (!Number.isInteger(mutation.qty) || mutation.qty <= 0) {
+        throw new Error('Jumlah mutasi stok tidak valid.');
+      }
+      if (mutation.type === 'out' && mutation.qty > currentStock) {
+        throw new Error('Stok keluar melebihi stok yang tersedia.');
+      }
+      newStock = mutation.type === 'in'
+        ? currentStock + mutation.qty
+        : currentStock - mutation.qty;
+    } else {
+      throw new Error('Jenis mutasi stok tidak valid.');
+    }
+
+    transaction.update(productRef, { stock: newStock });
+    transaction.set(mutationRef, {
+      ...mutation,
+      qty: mutationQty,
+      ...(mutation.type === 'koreksi'
+        ? { note: `${mutation.note || 'Koreksi stok'} (Sistem: ${currentStock} -> Fisik: ${newStock})` }
+        : {}),
+      date: Timestamp.fromDate(mutation.date instanceof Date ? mutation.date : new Date(mutation.date)),
+    });
+
+    return { newStock, qty: mutationQty };
+  });
 };
 
 export const cancelMutationAndRestoreStock = async (mutationId, productId, newStock) => {
@@ -368,5 +452,3 @@ export const clearAllMutationsFromDB = async () => {
     await batch.commit();
   }
 };
-
-

@@ -11,6 +11,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const nodeModulesTypescriptPlugin = {
   name: 'treat-node-modules-rn-as-tsx',
   enforce: 'pre',
+  resolveId(source, importer) {
+    if (source === './object-utils' && importer?.replace(/\\/g, '/').includes('/react-native-vector-icons/lib/icon-button.js')) {
+      return path.resolve(__dirname, 'src/stubs/vectorIconObjectUtils.js');
+    }
+  },
   async transform(code, id) {
     // Paket-paket yang diketahui menggunakan TypeScript/Flow di dalam source-nya
     const rnPackages = [
@@ -147,10 +152,15 @@ export default defineConfig({
     exclude: [],
   },
   optimizeDeps: {
+    include: [
+      'invariant',
+      'fontfaceobserver',
+      '@react-native/assets-registry/registry',
+    ],
     // Exclude paket yang bermasalah saat pre-bundling esbuild
     exclude: [
-      '@expo/vector-icons',
       'react-native-view-shot',
+      '@expo/vector-icons',
       '@react-native-community/datetimepicker',
       'expo-sharing',
       'expo-print',

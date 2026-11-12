@@ -17,9 +17,15 @@ import {
   useWindowDimensions,
   ActivityIndicator,
 } from 'react-native';
-import { MaterialCommunityIcons, Feather } from '@expo/vector-icons';
+import MaterialCommunityIcons from '@expo/vector-icons/build/MaterialCommunityIcons';
+import Feather from '@expo/vector-icons/build/Feather';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import { generateReceiptCanvas } from './src/receiptCanvasGenerator';
+import {
+  generateFinancialReportPng,
+  generateIncomingStockReportPng,
+  generateSalesReportPng,
+} from './src/reportCanvasGenerator';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as Sharing from 'expo-sharing';
 import * as Print from 'expo-print';
@@ -31,12 +37,12 @@ import {
   subscribeToCustomers,
   addProduct as fbAddProduct,
   updateProduct as fbUpdateProduct,
+  updateProductAndAddStock as fbUpdateProductAndAddStock,
   deleteProductFromDB,
-  updateProductStock,
   batchUpdateProductStocks,
+  addStockMutationAndUpdateStock as fbAddStockMutationAndUpdateStock,
   addTransaction as fbAddTransaction,
   updateTransactionAndStocks as fbUpdateTransactionAndStocks,
-  addMutation as fbAddMutation,
   cancelMutationAndRestoreStock as fbCancelMutationAndRestoreStock,
   addUser as fbAddUser,
   updateUserInDB as fbUpdateUser,
@@ -92,36 +98,6 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
   "'": '&#39;',
 }[character]));
 
-let webPdfModulesPromise;
-
-const loadWebPdfModules = () => {
-  if (!webPdfModulesPromise) {
-    webPdfModulesPromise = Promise.all([
-      import('jspdf'),
-      import('jspdf-autotable'),
-    ]).then(([pdfModule, tableModule]) => ({
-      jsPDF: pdfModule.jsPDF,
-      autoTable: tableModule.default,
-    })).catch((error) => {
-      webPdfModulesPromise = null;
-      throw error;
-    });
-  }
-  return webPdfModulesPromise;
-};
-
-const downloadPdfDocument = (pdf, filename) => {
-  const url = URL.createObjectURL(pdf.output('blob'));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.style.display = 'none';
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-};
-
 const buildReceiptHtml = ({ receiptNumber, date, detailsHtml, itemsHtml, subtotal, discount, total, paymentsHtml, extraHtml = '', footer = 'Terima kasih atas kunjungan Anda' }) => `
   <!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
     @page{size:80mm auto;margin:0}*{box-sizing:border-box}body{width:80mm;margin:0 auto;color:#27313f;background:#fff;font:13px Arial,sans-serif}
@@ -137,55 +113,6 @@ const buildReceiptHtml = ({ receiptNumber, date, detailsHtml, itemsHtml, subtota
     <section class="totals"><div class="row"><span class="label">Subtotal</span><span class="value">${formatRp(subtotal)}</span></div><div class="row discount"><span>Diskon</span><span class="value">- ${formatRp(discount)}</span></div><div class="row grand"><span>TOTAL</span><span class="value">${formatRp(total)}</span></div></section>
     <section class="payments">${paymentsHtml}</section><section class="stock-history">${extraHtml}</section><p class="footer">${escapeHtml(footer)}</p>
   </main></body></html>`;
-
-const exportTablePdf = async (filename, title, headers, rows) => {
-  if (Platform.OS === 'web') {
-    const { jsPDF, autoTable } = await loadWebPdfModules();
-    const pdf = new jsPDF({ orientation: headers.length > 6 ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' });
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(16);
-    pdf.setTextColor(25, 55, 43);
-    pdf.text(title, 12, 16);
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(8);
-    pdf.setTextColor(75, 85, 80);
-    pdf.text(`Dicetak ${new Date().toLocaleString('id-ID')}`, 12, 22);
-    autoTable(pdf, {
-      startY: 27,
-      head: [headers],
-      body: rows.length ? rows : [['Tidak ada data laporan.', ...Array(headers.length - 1).fill('')]],
-      margin: { left: 12, right: 12, top: 12, bottom: 12 },
-      theme: 'grid',
-      styles: { font: 'helvetica', fontSize: headers.length > 6 ? 7 : 8, cellPadding: 2, overflow: 'linebreak' },
-      headStyles: { fillColor: [4, 120, 87], textColor: [255, 255, 255], fontStyle: 'bold' },
-      alternateRowStyles: { fillColor: [248, 250, 248] },
-    });
-    downloadPdfDocument(pdf, filename);
-    return;
-  }
-
-  const tableRows = rows.length
-    ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')
-    : `<tr><td colspan="${headers.length}">Tidak ada data laporan.</td></tr>`;
-  const html = `<!doctype html><html lang="id"><head><meta charset="utf-8"><style>
-    @page{size:A4 ${headers.length > 6 ? 'landscape' : 'portrait'};margin:12mm}
-    body{font-family:Arial,sans-serif;color:#1f2937;font-size:10px}
-    h1{font-size:18px;color:#19372b;margin:0 0 5px}
-    p{font-size:9px;color:#4b5563;margin:0 0 14px}
-    table{width:100%;border-collapse:collapse;table-layout:auto}
-    th,td{border:1px solid #d1d5db;padding:6px;text-align:left;overflow-wrap:anywhere}
-    th{background:#047857;color:#fff}
-    tr:nth-child(even){background:#f8faf8}
-  </style></head><body><h1>${escapeHtml(title)}</h1><p>Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</p>
-    <table><thead><tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead><tbody>${tableRows}</tbody></table>
-    </body></html>`;
-  const file = await Print.printToFileAsync({ html });
-  if (await Sharing.isAvailableAsync()) {
-    await Sharing.shareAsync(file.uri, { mimeType: 'application/pdf', dialogTitle: `Simpan atau bagikan ${title}`, UTI: 'com.adobe.pdf' });
-  } else {
-    Alert.alert('PDF dibuat', `Laporan tersimpan di ${file.uri}`);
-  }
-};
 
 const INITIAL_PRODUCTS = [
   {
@@ -1575,9 +1502,6 @@ export default function App() {
   const shiftReceiptCaptureRef = useRef(null);
   const salesReceiptCaptureRef = useRef(null);
   const [activeTab, setActiveTab] = useState('pos');
-  const [pdfModulesReady, setPdfModulesReady] = useState(Platform.OS !== 'web');
-  const [pdfExporting, setPdfExporting] = useState(false);
-  const [pdfExportStatus, setPdfExportStatus] = useState(Platform.OS === 'web' ? 'Menyiapkan fitur PDF...' : '');
 
   // Users & Multi-user session
   const [users, setUsers] = useState([]);
@@ -1630,6 +1554,13 @@ export default function App() {
   const [products, setProducts] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [mutations, setMutations] = useState([]);
+  const [reportExporting, setReportExporting] = useState(false);
+  const [reportExportStatus, setReportExportStatus] = useState('');
+  const [reportCapture, setReportCapture] = useState(null);
+  const reportCaptureRef = useRef(null);
+  const reportCaptureResolveRef = useRef(null);
+  const reportCaptureRejectRef = useRef(null);
+  const reportExportLockRef = useRef(false);
 
   // Loading state for Firestore
   const [isLoading, setIsLoading] = useState(true);
@@ -1638,29 +1569,54 @@ export default function App() {
   const isSuperAdmin = currentUser?.role?.toLowerCase() === 'super admin' || currentUser?.role?.toLowerCase() === 'superadmin' || currentUser?.role?.toLowerCase() === 'admin';
 
   useEffect(() => {
+    if (Platform.OS === 'web' || !reportCapture) return undefined;
+
+    let active = true;
+    const timeout = setTimeout(async () => {
+      try {
+        if (!reportCaptureRef.current) {
+          throw new Error('Tampilan laporan PNG belum siap.');
+        }
+        const { captureRef } = await import('react-native-view-shot');
+        const imageUri = await captureRef(reportCaptureRef.current, {
+          format: 'png',
+          quality: 1,
+          result: 'tmpfile',
+          snapshotContentContainer: true,
+        });
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(imageUri, {
+            mimeType: 'image/png',
+            dialogTitle: `Simpan atau bagikan ${reportCapture.title}`,
+            UTI: 'public.png',
+          });
+        } else {
+          Alert.alert('PNG dibuat', `Gambar tersimpan sementara di ${imageUri}`);
+        }
+      } catch (error) {
+        reportCaptureRejectRef.current?.(error);
+      } finally {
+        if (active) {
+          setReportCapture(null);
+          const resolveCapture = reportCaptureResolveRef.current;
+          reportCaptureResolveRef.current = null;
+          reportCaptureRejectRef.current = null;
+          resolveCapture?.();
+        }
+      }
+    }, 300);
+
+    return () => {
+      active = false;
+      clearTimeout(timeout);
+    };
+  }, [reportCapture]);
+
+  useEffect(() => {
     if (currentUser && !isSuperAdmin && (activeTab === 'dashboard' || activeTab === 'crud' || activeTab === 'mutation')) {
       setActiveTab('pos');
     }
   }, [currentUser, isSuperAdmin, activeTab]);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web') return undefined;
-    let active = true;
-    loadWebPdfModules().then(() => {
-      if (active) {
-        setPdfModulesReady(true);
-        setPdfExportStatus('');
-      }
-    }).catch((error) => {
-      console.error('PDF module preload error:', error);
-      if (active) {
-        setPdfExportStatus('Fitur PDF gagal dimuat. Muat ulang aplikasi lalu coba lagi.');
-      }
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   // ==========================================
   // Firebase: Seed data & Real-time subscriptions
@@ -1974,69 +1930,234 @@ export default function App() {
     }
   };
 
-  const downloadSalesReport = async () => {
-    const rows = transactions.flatMap((tx) => tx.items.map((item) => [
-      formatDateInput(tx.date),
-      tx.id,
-      tx.cashier || '-',
-      item.name,
-      item.qty,
-      formatRp(item.price),
-      formatRp(item.price * item.qty),
-      formatRp(tx.total),
-      tx.method || '-',
-    ]));
-    await exportTablePdf(
-      `laporan-penjualan-${formatDateInput(new Date())}.pdf`,
-      'Laporan Penjualan',
-      ['Tanggal', 'ID Transaksi', 'Kasir', 'Produk', 'Qty', 'Harga Satuan', 'Total Item', 'Total Transaksi', 'Metode Pembayaran'],
-      rows,
-    );
+  const exportReportPng = async (filename, createDataUrl, nativeReport) => {
+    if (Platform.OS === 'web') {
+      const dataUrl = createDataUrl();
+      if (!dataUrl) throw new Error('Gambar laporan tidak berhasil dibuat.');
+      const downloadLink = document.createElement('a');
+      downloadLink.href = dataUrl;
+      downloadLink.download = filename;
+      downloadLink.click();
+      return;
+    }
+
+    await new Promise((resolve, reject) => {
+      reportCaptureResolveRef.current = resolve;
+      reportCaptureRejectRef.current = reject;
+      setReportCapture({ ...nativeReport, filename });
+    });
   };
 
-  const downloadStockReport = async () => {
-    const rows = mutations
-      .filter((mutation) => mutation.type === 'in')
-      .map((mutation) => {
-        const product = products.find((item) => item.id === mutation.productId);
-        return [
-          formatDateInput(mutation.date),
-          mutation.id,
-          product?.name || mutation.productId,
-          mutation.qty,
-          mutation.operator || '-',
-          mutation.note || '-',
-        ];
-      });
-    await exportTablePdf(
-      `laporan-penambahan-stok-${formatDateInput(new Date())}.pdf`,
-      'Laporan Penambahan Stok',
-      ['Tanggal', 'ID Mutasi', 'Produk', 'Qty Ditambahkan', 'Petugas', 'Keterangan'],
-      rows,
-    );
-  };
+  // Fungsi helper untuk simpan dan bagikan laporan PNG (Dukungan penuh Android, iOS, & Web)
+  const saveReportPngDocument = async (dataUrl, filename) => {
+    if (!dataUrl) throw new Error('Data gambar laporan tidak tersedia.');
 
-  const runPdfExport = async (exporter) => {
-    if (pdfExporting || !pdfModulesReady) return;
-    setPdfExporting(true);
-    setPdfExportStatus('Sedang membuat PDF...');
-    try {
-      await exporter();
-      setPdfExportStatus(Platform.OS === 'web'
-        ? 'PDF selesai dibuat. Periksa folder Unduhan browser.'
-        : 'PDF siap disimpan atau dibagikan.');
-    } catch (error) {
-      console.error('Report PDF export error:', error);
-      setPdfExportStatus('PDF gagal dibuat. Coba lagi dan periksa izin penyimpanan perangkat.');
-      if (Platform.OS !== 'web') {
-        Alert.alert('Gagal membuat PDF', 'Coba lagi setelah memastikan perangkat dapat membuat atau membagikan file.');
+    if (Platform.OS === 'web') {
+      const byteString = atob(dataUrl.split(',')[1]);
+      const mimeString = dataUrl.split(',')[0].split(':')[1].split(';')[0];
+      const ab = new ArrayBuffer(byteString.length);
+      const ia = new Uint8Array(ab);
+      for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
       }
-    } finally {
-      setPdfExporting(false);
+      const blob = new Blob([ab], { type: mimeString });
+      const file = new File([blob], filename, { type: 'image/png' });
+
+      // Coba Web Share API (Khusus iOS / iPhone agar langsung masuk Sheet Simpan ke Foto)
+      if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: filename,
+          });
+          return;
+        } catch (shareErr) {
+          if (shareErr.name === 'AbortError') return;
+          console.warn('Web Share API error:', shareErr);
+        }
+      }
+
+      // Download otomatis via Blob URL (Komputer & Android)
+      try {
+        const blobUrl = URL.createObjectURL(blob);
+        const downloadLink = document.createElement('a');
+        downloadLink.href = blobUrl;
+        downloadLink.download = filename;
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        setTimeout(() => {
+          if (downloadLink.parentNode) {
+            downloadLink.parentNode.removeChild(downloadLink);
+          }
+          URL.revokeObjectURL(blobUrl);
+        }, 1000);
+      } catch (dlErr) {
+        console.warn('Download link fallback error:', dlErr);
+      }
+
+      // Tampilkan Preview Modal agar pengguna HP bisa langsung tap & simpan ke galeri
+      setReceiptPngPreview({
+        url: dataUrl,
+        filename: filename,
+      });
+      return;
+    }
+
+    // Native mobile app
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(dataUrl, {
+        mimeType: 'image/png',
+        dialogTitle: `Simpan atau bagikan ${filename}`,
+        UTI: 'public.png',
+      });
+    } else {
+      Alert.alert('PNG Siap', 'File gambar laporan berhasil disiapkan.');
     }
   };
 
-  // Period Filters
+  // 1. LAPORAN PENJUALAN PNG (Total Harga Ambil/HPP & Harga Jual ke Bawah)
+  const downloadSalesReportPng = async () => {
+    let grandRevenue = 0;
+    let grandHpp = 0;
+    let grandUnits = 0;
+
+    const reportItems = transactions.flatMap((tx) =>
+      (tx.items || []).map((item) => {
+        const itemHpp = item.hpp || 0;
+        const itemPrice = item.price || 0;
+        const totalItemHpp = itemHpp * item.qty;
+        const totalItemRevenue = itemPrice * item.qty;
+        const margin = totalItemRevenue - totalItemHpp;
+
+        grandRevenue += totalItemRevenue;
+        grandHpp += totalItemHpp;
+        grandUnits += item.qty;
+
+        return {
+          date: formatDateInput(tx.date),
+          txId: tx.id,
+          cashier: tx.cashier || '-',
+          name: item.name,
+          qty: item.qty,
+          hpp: itemHpp,
+          price: itemPrice,
+          totalHpp: totalItemHpp,
+          totalRevenue: totalItemRevenue,
+          margin: margin,
+          method: tx.method || 'Tunai',
+        };
+      })
+    );
+
+    const dataUrl = generateSalesReportPng({
+      title: 'LAPORAN PENJUALAN PRODUK',
+      periodLabel: 'Semua Periode Transaksi',
+      printedAt: new Date().toLocaleString('id-ID'),
+      items: reportItems,
+      totalRevenue: grandRevenue,
+      totalHpp: grandHpp,
+      grossProfit: grandRevenue - grandHpp,
+      totalUnitsSold: grandUnits,
+    });
+
+    await saveReportPngDocument(dataUrl, `laporan-penjualan-${formatDateInput(new Date())}.png`);
+  };
+
+  // 2. LAPORAN BARANG MASUK / RESTOCK PNG
+  const downloadIncomingStockReportPng = async () => {
+    let totalInUnits = 0;
+    let totalInValue = 0;
+
+    const incomingItems = mutations
+      .filter((mutation) => mutation.type === 'in')
+      .map((mutation) => {
+        const product = products.find((item) => item.id === mutation.productId);
+        const unitHpp = product?.hpp || 0;
+        const totalCost = unitHpp * (mutation.qty || 0);
+
+        totalInUnits += Number(mutation.qty) || 0;
+        totalInValue += totalCost;
+
+        return {
+          date: formatDateInput(mutation.date),
+          id: mutation.id,
+          name: product?.name || mutation.productId || 'Produk',
+          category: product?.category || 'Stok',
+          qty: mutation.qty || 0,
+          hpp: unitHpp,
+          totalCost: totalCost,
+          operator: mutation.operator || '-',
+          note: mutation.note || '-',
+        };
+      });
+
+    const dataUrl = generateIncomingStockReportPng({
+      title: 'LAPORAN BARANG MASUK & RESTOCK',
+      printedAt: new Date().toLocaleString('id-ID'),
+      items: incomingItems,
+      totalUnitsIn: totalInUnits,
+      totalValueIn: totalInValue,
+    });
+
+    await saveReportPngDocument(dataUrl, `laporan-barang-masuk-${formatDateInput(new Date())}.png`);
+  };
+
+  // 3. LAPORAN LENGKAP KEUANGAN & LABA RUGI PNG
+  const downloadFinancialReportPng = async () => {
+    const grossSales = reportData.periodTransactions.reduce(
+      (sum, transaction) => sum + (transaction.subtotal || transaction.total || 0),
+      0
+    );
+    const totalUnitsSold = reportData.periodTransactions.reduce(
+      (sum, transaction) => sum + (transaction.items || []).reduce((itemSum, item) => itemSum + (item.qty || 0), 0),
+      0
+    );
+
+    const metrics = [
+      ['Penjualan kotor', grossSales],
+      ['Penerimaan bersih', reportData.revenue],
+      ['Arus kas bersih estimasi', reportData.estimatedNetCashFlow],
+      ['Total HPP barang terjual', reportData.costOfGoodsSold],
+      ['Laba kotor', reportData.grossProfit],
+      ['Laba bersih estimasi', reportData.netProfit],
+      ['Total diskon', reportData.discountTotal],
+      ['Total belanja restock', reportData.stockPurchaseCashOut],
+      ['Kerugian stok (rusak/hilang)', reportData.operationalLoss],
+      ['Total unit produk terjual', `${totalUnitsSold} unit`],
+      ['Total transaksi terdata', `${reportData.periodTransactions.length} transaksi`],
+    ];
+
+    const dataUrl = generateFinancialReportPng({
+      title: 'LAPORAN KEUANGAN & LABA RUGI',
+      periodLabel: reportData.periodLabel,
+      printedAt: new Date().toLocaleString('id-ID'),
+      metrics,
+      paymentSummary: reportData.paymentSummary,
+      soldList: reportData.soldList,
+    });
+
+    await saveReportPngDocument(dataUrl, `laporan-keuangan-${reportPeriod}-${formatDateInput(new Date())}.png`);
+  };
+
+  const runPngExport = async (exporter) => {
+    if (reportExporting) return;
+    setReportExporting(true);
+    setReportExportStatus('Menyiapkan gambar PNG laporan...');
+    try {
+      await exporter();
+      setReportExportStatus(Platform.OS === 'web'
+        ? 'Gambar PNG selesai dibuat. Periksa folder Unduhan atau galeri Anda.'
+        : 'Gambar PNG siap disimpan atau dibagikan.');
+    } catch (error) {
+      console.error('Report PNG export error:', error);
+      setReportExportStatus('Gagal membuat gambar PNG laporan.');
+      Alert.alert('Gagal membuat PNG', 'Silakan coba lagi beberapa saat lagi.');
+    } finally {
+      setReportExporting(false);
+    }
+  };
+
+    // Period Filters
   const [selectedPeriod, setSelectedPeriod] = useState('month');
   const [reportPeriod, setReportPeriod] = useState('day');
   const [reportsSubTab, setReportsSubTab] = useState('history'); // 'history' | 'finance'
@@ -2067,6 +2188,8 @@ export default function App() {
   // Modals state
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState(null);
+  const [isProductSaving, setIsProductSaving] = useState(false);
+  const productSaveLockRef = useRef(false);
   const [prodBarcode, setProdBarcode] = useState('');
   const [prodName, setProdName] = useState('');
   const [prodCategory, setProdCategory] = useState('Anggur & Wine');
@@ -2083,13 +2206,32 @@ export default function App() {
   const [mutType, setMutType] = useState('in');
   const [mutQty, setMutQty] = useState('');
   const [mutNote, setMutNote] = useState('');
+  const [isMutationSaving, setIsMutationSaving] = useState(false);
+  const mutationSaveLockRef = useRef(false);
   const [stockHistoryFilter, setStockHistoryFilter] = useState('all');
+
+  // Guard untuk mencegah double input stok / mutasi
+  const [isSubmittingMutation, setIsSubmittingMutation] = useState(false);
+
+  // Modal Khusus Restock / Barang Masuk Otomatis
+  const [isRestockModalOpen, setIsRestockModalOpen] = useState(false);
+  const [restockProdId, setRestockProdId] = useState(INITIAL_PRODUCTS[0]?.id || '');
+  const [restockQty, setRestockQty] = useState('');
+  const [restockHpp, setRestockHpp] = useState('');
+  const [restockNote, setRestockNote] = useState('');
+  const [restockSearch, setRestockSearch] = useState('');
+
+  // Search untuk pemilihan produk di Modal Mutasi & Opname
+  const [mutSearch, setMutSearch] = useState('');
+  const [corrSearch, setCorrSearch] = useState('');
 
   // Stock Correction Modal
   const [isStockCorrectionOpen, setIsStockCorrectionOpen] = useState(false);
   const [corrProdId, setCorrProdId] = useState(INITIAL_PRODUCTS[0]?.id || '');
   const [corrPhysicalStock, setCorrPhysicalStock] = useState('');
   const [corrReason, setCorrReason] = useState('Koreksi Stok Fisik / Opname');
+  const [isStockCorrectionSaving, setIsStockCorrectionSaving] = useState(false);
+  const stockCorrectionSaveLockRef = useRef(false);
 
   // Receipt Modal
   const [isReceiptModalOpen, setIsReceiptModalOpen] = useState(false);
@@ -2515,11 +2657,20 @@ export default function App() {
   };
 
   const stockHistory = useMemo(() => {
-    const mutationEntries = mutations.map((mutation) => ({
+    // Deduplikasi mutasi berdasarkan ID unik
+    const uniqueMutationsMap = new Map();
+    (mutations || []).forEach((mutation) => {
+      if (mutation && mutation.id && !uniqueMutationsMap.has(mutation.id)) {
+        uniqueMutationsMap.set(mutation.id, mutation);
+      }
+    });
+
+    const mutationEntries = Array.from(uniqueMutationsMap.values()).map((mutation) => ({
       ...mutation,
       source: 'mutation',
       productName: products.find((product) => product.id === mutation.productId)?.name || mutation.productId || 'Produk tidak tersedia',
     }));
+
     const saleEntries = transactions.flatMap((transaction) =>
       (transaction.items || [])
         .filter((item) => item.qty > 0)
@@ -2540,10 +2691,10 @@ export default function App() {
           source: 'sale',
         })),
     );
+
     return [...mutationEntries, ...saleEntries].sort(
       (a, b) => new Date(b.date || 0) - new Date(a.date || 0),
-    );
-  }, [mutations, products, transactions]);
+    );  }, [mutations, products, transactions]);
 
   const stockHistoryTotals = useMemo(() => ({
     restocked: stockHistory
@@ -2681,7 +2832,7 @@ export default function App() {
     let operationalLoss = 0;
     periodMutations.forEach((mutation) => {
       const product = products.find((item) => item.id === mutation.productId);
-      const unitCost = product?.hpp || 0;
+      const unitCost = Number(mutation.hpp ?? product?.hpp) || 0;
       if (mutation.type === 'in') stockPurchaseCashOut += unitCost * Math.max(0, mutation.qty || 0);
       if (mutation.type === 'out') operationalLoss += unitCost * Math.max(0, mutation.qty || 0);
       if (mutation.type === 'koreksi' && mutation.qty < 0) operationalLoss += unitCost * Math.abs(mutation.qty);
@@ -2721,340 +2872,6 @@ export default function App() {
         : `Bulanan - ${now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}`,
     };
   }, [transactions, mutations, products, reportPeriod]);
-
-  const downloadFinancialPdf = async () => {
-    const productRows = (items, emptyText) => items.length
-      ? items.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${item.qty}</td><td>${formatRp(item.hpp)}</td><td>${formatRp(item.promotionDiscount)}</td><td>${formatRp(item.total)}</td><td>${formatRp(item.total - item.hpp)}</td></tr>`).join('')
-      : `<tr><td colspan="6">${emptyText}</td></tr>`;
-    const unsoldRows = reportData.unsoldProducts.length
-      ? reportData.unsoldProducts.map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.category || '-')}</td><td>${item.stock}</td></tr>`).join('')
-      : '<tr><td colspan="3">Semua produk memiliki penjualan pada periode ini.</td></tr>';
-    const paymentRows = reportData.paymentSummary.length
-      ? reportData.paymentSummary.map((item) => `<tr><td>${escapeHtml(item.method || 'Tidak diketahui')}</td><td>${item.count}</td><td>${formatRp(item.total)}</td></tr>`).join('')
-      : '<tr><td colspan="3">Belum ada transaksi.</td></tr>';
-    const stockMutationRows = reportData.periodMutations.length
-      ? reportData.periodMutations.map((mutation) => {
-        const product = products.find((item) => item.id === mutation.productId);
-        const typeLabel = mutation.type === 'in' ? 'Stok masuk' : mutation.type === 'out' ? 'Stok keluar' : 'Koreksi stok';
-        const unitCost = product?.hpp || 0;
-        return `<tr><td>${escapeHtml(formatDateInput(mutation.date))}</td><td>${escapeHtml(typeLabel)}</td><td>${escapeHtml(product?.name || mutation.productId)}</td><td>${mutation.qty > 0 ? '+' : ''}${mutation.qty}</td><td>${formatRp(unitCost)}</td><td>${formatRp(Math.abs(mutation.qty || 0) * unitCost)}</td><td>${escapeHtml(mutation.operator || '-')}</td><td>${escapeHtml(mutation.note || '-')}</td></tr>`;
-      }).join('')
-      : '<tr><td colspan="8">Tidak ada mutasi stok pada periode ini.</td></tr>';
-    // Group transactions by cashier
-    const txByCashier = reportData.periodTransactions.reduce((groups, tx) => {
-      const key = tx.cashier || '-';
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(tx);
-      return groups;
-    }, {});
-    const cashierNames = Object.keys(txByCashier).sort();
-    const renderTxHtml = (transaction) => {
-      const items = transaction.items || [];
-      const itemSubtotal = items.reduce((sum, item) => sum + (item.regularPrice ?? item.price ?? 0) * (item.qty || 0), 0);
-      const subtotal = transaction.subtotal ?? itemSubtotal;
-      const discount = transaction.discountAmount || 0;
-      const promotionDiscount = transaction.promotionDiscountAmount ?? items.reduce((sum, item) => (
-        sum + Math.max(0, (item.regularPrice || item.price || 0) - (item.price || 0)) * (item.qty || 0)
-      ), 0);
-      const total = transaction.total ?? Math.max(0, subtotal - promotionDiscount - discount);
-      const discountLabel = transaction.discountType === 'percent'
-        ? `${transaction.discountValue || 0}%`
-        : formatRp(transaction.discountValue || discount);
-      const itemRows = items.map((item) => {
-        const qty = item.qty || 0;
-        const sales = (item.price || 0) * qty;
-        const itemHpp = (item.hpp || 0) * qty;
-        const regularPrice = item.regularPrice ?? item.price ?? 0;
-        const bundleContents = item.components?.length
-          ? `<br><small>Paket: ${item.components.map((c) => `${escapeHtml(c.name)} x${c.qty}`).join(' + ')}</small>`
-          : '';
-        const promotionSaving = regularPrice > item.price
-          ? `<br><small>Hemat ${formatRp((regularPrice - item.price) * qty)}</small>`
-          : '';
-        return `<tr><td>${escapeHtml(item.name)}${bundleContents}</td><td>${qty}</td><td>${formatRp(regularPrice)} / ${formatRp(item.price || 0)}</td><td>${formatRp(item.hpp || 0)}</td><td>${formatRp(sales)}${promotionSaving}</td><td>${formatRp(itemHpp)}</td><td>${formatRp(sales - itemHpp)}</td></tr>`;
-      }).join('');
-      const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
-      const received = transaction.cashAmount ?? total;
-      return `<article class="transaction"><div class="transactionTitle"><strong>Transaksi ${escapeHtml(transaction.id)}</strong><strong>${formatRp(total)}</strong></div><div class="transactionMeta"><span>Tanggal: ${escapeHtml(new Date(transaction.date).toLocaleString('id-ID'))}</span><span>Pelanggan: ${escapeHtml(customerName)}${transaction.customer?.phone ? ` (${escapeHtml(transaction.customer.phone)})` : ''}</span><span>Metode: ${escapeHtml(transaction.method || '-')}</span></div><table><thead><tr><th>Barang</th><th>Qty</th><th>Harga Normal / Promo</th><th>HPP/Unit</th><th>Penjualan</th><th>HPP</th><th>Laba Kotor</th></tr></thead><tbody>${itemRows || '<tr><td colspan="7">Rincian barang tidak tersedia.</td></tr>'}</tbody></table><div class="transactionTotals"><span>Subtotal normal: ${formatRp(subtotal)}</span>${promotionDiscount ? `<span>Hemat paket promo: -${formatRp(promotionDiscount)}</span>` : ''}<span>Diskon tambahan (${escapeHtml(discountLabel)}): -${formatRp(discount)}</span><strong>Total Tagihan: ${formatRp(total)}</strong><span>${transaction.method === 'Tunai' ? `Uang diterima: ${formatRp(received)}` : `Dibayar: ${formatRp(received)}`}</span>${transaction.method === 'Tunai' ? `<span>Kembalian: ${formatRp(transaction.changeAmount ?? Math.max(0, received - total))}</span>` : ''}</div></article>`;
-    };
-    const transactionRows = reportData.periodTransactions.length
-      ? cashierNames.map((cashierName) => {
-        const txList = txByCashier[cashierName];
-        const cashierTotal = txList.reduce((sum, tx) => sum + (tx.total || 0), 0);
-        const cashierUnits = txList.reduce((sum, tx) => sum + (tx.items || []).reduce((s, i) => s + (i.qty || 0), 0), 0);
-        return `<div class="cashierGroup"><div class="cashierHeader"><span>&#128100; Kasir: <strong>${escapeHtml(cashierName)}</strong></span><span>${txList.length} transaksi &nbsp;|&nbsp; ${cashierUnits} unit &nbsp;|&nbsp; <strong>${formatRp(cashierTotal)}</strong></span></div>${txList.map(renderTxHtml).join('')}<div class="cashierSubtotal"><span>Sub-total Kasir <strong>${escapeHtml(cashierName)}</strong></span><span>${txList.length} transaksi &nbsp;&bull;&nbsp; ${cashierUnits} unit &nbsp;&bull;&nbsp; <strong>${formatRp(cashierTotal)}</strong></span></div></div>`;
-      }).join('')
-      : '<p>Belum ada penjualan pada periode ini.</p>';
-    const totalUnitsSold = reportData.soldList.reduce((sum, item) => sum + item.qty, 0);
-    const grossSales = reportData.soldList.reduce((sum, item) => sum + item.total, 0)
-      + reportData.periodTransactions.reduce((sum, transaction) => sum + (transaction.discountAmount || 0) + (transaction.promotionDiscountAmount || 0), 0);
-    const cashTransactions = reportData.periodTransactions.filter((transaction) => transaction.method === 'Tunai');
-    const cashReceipts = cashTransactions.reduce((sum, transaction) => sum + (transaction.total || 0), 0);
-    const nonCashReceipts = reportData.revenue - cashReceipts;
-    const cashCollected = cashTransactions.reduce((sum, transaction) => sum + (transaction.cashAmount || 0), 0);
-    const cashChange = cashTransactions.reduce((sum, transaction) => sum + (transaction.changeAmount || 0), 0);
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-      @page{size:A4 landscape;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#1f2937;font-size:9px;margin:0}h1{font-size:19px;margin:0 0 4px;color:#111827}h2{font-size:11px;margin:13px 0 5px;border-bottom:1px solid #9ca3af;padding-bottom:4px;color:#111827;break-after:avoid}.reportHeader{border-bottom:2px solid #047857;padding-bottom:8px;margin-bottom:8px}.subtitle{color:#4b5563;font-size:9px}.grid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px}.metric{padding:6px;border:1px solid #d1d5db}.metric span{display:block;color:#4b5563;font-size:8px}.metric strong{display:block;margin-top:3px;font-size:10px;color:#111827}p{line-height:1.4;margin:5px 0}table{width:100%;border-collapse:collapse;margin:4px 0 8px;table-layout:auto}thead{display:table-header-group}tr{break-inside:avoid;page-break-inside:avoid}th,td{border:1px solid #bfc5cc;padding:4px;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#eef5f1;color:#1f2937;font-size:8px}.transaction{border:1px solid #aeb6bf;padding:6px;margin:7px 0;break-inside:auto;page-break-inside:auto}.transactionTitle{display:flex;justify-content:space-between;gap:10px;font-size:10px;color:#111827}.transactionMeta{display:flex;flex-wrap:wrap;gap:4px 14px;color:#374151;font-size:8px;line-height:1.4;margin:5px 0}.transaction table{font-size:8px}.transactionTotals{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:5px;padding-top:5px;border-top:1px solid #cbd5e1;font-size:8px}.cashierGroup{margin:10px 0 16px;border:2px solid #047857;border-radius:4px;overflow:hidden}.cashierHeader{background:#047857;color:#fff;padding:6px 10px;display:flex;justify-content:space-between;align-items:center;font-size:9px;break-after:avoid}.cashierHeader strong{font-size:10px}.cashierSubtotal{background:#eef5f1;border-top:2px solid #047857;padding:5px 10px;display:flex;justify-content:space-between;align-items:center;font-size:8px;color:#1f2937}.cashierSubtotal strong{color:#047857}.cashierGroup .transaction{margin:6px 8px;border-radius:2px}.foot{margin-top:12px;padding-top:5px;border-top:1px solid #d1d5db;color:#4b5563;font-size:8px}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-      </style></head><body>
-      <header class="reportHeader"><h1>LAPORAN KEUANGAN DAN PENJUALAN</h1><div class="subtitle">${escapeHtml(reportData.periodLabel)} | Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</div></header>
-      <h2>Ringkasan Arus Kas dan Laba</h2><div class="grid">
-      <div class="metric"><span>Penjualan Sebelum Diskon</span><strong>${formatRp(grossSales)}</strong></div>
-      <div class="metric"><span>Penerimaan Setelah Diskon</span><strong>${formatRp(reportData.revenue)}</strong></div>
-      <div class="metric"><span>Arus Kas Bersih Estimasi</span><strong>${formatRp(reportData.estimatedNetCashFlow)}</strong></div>
-      <div class="metric"><span>HPP Barang Terjual</span><strong>${formatRp(reportData.costOfGoodsSold)}</strong></div>
-      <div class="metric"><span>Laba Kotor</span><strong>${formatRp(reportData.grossProfit)}</strong></div>
-      <div class="metric"><span>Laba Bersih Estimasi</span><strong>${formatRp(reportData.netProfit)}</strong></div>
-      <div class="metric"><span>Diskon Penjualan</span><strong>${formatRp(reportData.discountTotal)}</strong></div>
-      <div class="metric"><span>Pengeluaran Pembelian Stok</span><strong>${formatRp(reportData.stockPurchaseCashOut)}</strong></div>
-      <div class="metric"><span>Kerugian Barang Keluar/Opname</span><strong>${formatRp(reportData.operationalLoss)}</strong></div>
-      <div class="metric"><span>Penerimaan Tunai</span><strong>${formatRp(cashReceipts)}</strong></div>
-      <div class="metric"><span>Penerimaan Non-Tunai</span><strong>${formatRp(nonCashReceipts)}</strong></div>
-      <div class="metric"><span>Uang Tunai Diterima</span><strong>${formatRp(cashCollected)}</strong></div>
-      <div class="metric"><span>Total Kembalian</span><strong>${formatRp(cashChange)}</strong></div>
-      <div class="metric"><span>Jumlah Transaksi</span><strong>${reportData.periodTransactions.length}</strong></div>
-      <div class="metric"><span>Total Unit Terjual</span><strong>${totalUnitsSold}</strong></div></div>
-      <h2>Analisis</h2><p>Periode ini mencatat ${reportData.periodTransactions.length} transaksi dan ${totalUnitsSold} unit terjual dengan penerimaan bersih setelah diskon sebesar ${formatRp(reportData.revenue)}. Total diskon tercatat ${formatRp(reportData.discountTotal)}. Margin laba kotor ${reportData.revenue ? `${((reportData.grossProfit / reportData.revenue) * 100).toFixed(1)}%` : '0%'} dari penerimaan. Arus kas bersih estimasi memperhitungkan penerimaan penjualan dikurangi penambahan stok dan kehilangan stok. Laba bersih estimasi memperhitungkan HPP barang terjual dan kehilangan stok; pembelian stok merupakan arus kas persediaan, bukan beban laba langsung.</p>
-      <h2>Ringkasan Produk Terjual</h2><table><thead><tr><th>Produk</th><th>Qty</th><th>HPP</th><th>Hemat Promo</th><th>Penjualan Setelah Promo</th><th>Laba Kotor</th></tr></thead><tbody>${productRows(reportData.soldList, 'Belum ada produk terjual.')}</tbody></table>
-      <h2>Produk Tidak Terjual</h2><table><thead><tr><th>Produk</th><th>Kategori</th><th>Stok Saat Ini</th></tr></thead><tbody>${unsoldRows}</tbody></table>
-      <h2>Metode Pembayaran</h2><table><thead><tr><th>Metode</th><th>Transaksi</th><th>Total</th></tr></thead><tbody>${paymentRows}</tbody></table>
-      <h2>Rincian Penjualan Per Transaksi</h2>${transactionRows}
-      <h2>Mutasi Stok Periode Ini</h2><table><thead><tr><th>Tanggal</th><th>Jenis</th><th>Produk</th><th>Selisih Qty</th><th>HPP/Unit</th><th>Nilai HPP</th><th>Petugas</th><th>Keterangan</th></tr></thead><tbody>${stockMutationRows}</tbody></table>
-      <div class="foot">Laporan lengkap berdasarkan transaksi dan mutasi dalam periode terpilih. Laba dan nilai mutasi dihitung sebagai estimasi menggunakan HPP produk yang tersimpan. Dokumen ini tidak menggunakan logo agar ruang laporan maksimal dan kolom tetap rapi.</div></body></html>`;
-
-    try {
-      if (Platform.OS === 'web') {
-        const { jsPDF, autoTable } = await loadWebPdfModules();
-        const pdf = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-        const pageWidth = pdf.internal.pageSize.getWidth();
-        const pageHeight = pdf.internal.pageSize.getHeight();
-        const margin = 12;
-        let cursorY = 16;
-
-        const drawPageHeader = () => {
-          pdf.setFont('helvetica', 'normal');
-          pdf.setFontSize(7);
-          pdf.setTextColor(90, 100, 95);
-          pdf.text(`LAPORAN KEUANGAN DAN PENJUALAN | ${reportData.periodLabel}`, margin, 8);
-          pdf.text(`Halaman ${pdf.internal.getNumberOfPages()}`, pageWidth - margin, 8, { align: 'right' });
-        };
-
-        const addSection = (title) => {
-          if (cursorY > pageHeight - 20) {
-            pdf.addPage();
-            cursorY = 16;
-          }
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(10);
-          pdf.setTextColor(25, 55, 43);
-          pdf.text(title, margin, cursorY);
-          cursorY += 3;
-          pdf.setDrawColor(35, 120, 82);
-          pdf.line(margin, cursorY, pageWidth - margin, cursorY);
-          cursorY += 3;
-        };
-
-        const addTable = (head, body, options = {}) => {
-          autoTable(pdf, {
-            startY: cursorY,
-            head: [head],
-            body,
-            margin: { left: margin, right: margin, top: 14, bottom: 12 },
-            theme: 'grid',
-            styles: { font: 'helvetica', fontSize: 7, cellPadding: 2, overflow: 'linebreak', textColor: [35, 40, 38] },
-            headStyles: { fillColor: [231, 242, 235], textColor: [25, 55, 43], fontStyle: 'bold' },
-            alternateRowStyles: { fillColor: [248, 250, 248] },
-            didDrawPage: drawPageHeader,
-            ...options,
-          });
-          cursorY = pdf.lastAutoTable.finalY + 6;
-        };
-
-        pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(17);
-        pdf.setTextColor(25, 55, 43);
-        pdf.text('LAPORAN KEUANGAN DAN PENJUALAN', margin, cursorY);
-        cursorY += 6;
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(8);
-        pdf.setTextColor(75, 85, 80);
-        pdf.text(`${reportData.periodLabel} | Dicetak ${new Date().toLocaleString('id-ID')}`, margin, cursorY);
-        cursorY += 8;
-
-        addSection('RINGKASAN ARUS KAS DAN LABA');
-        const financialSummary = [
-          ['Penjualan sebelum diskon', formatRp(grossSales)],
-          ['Penerimaan setelah diskon', formatRp(reportData.revenue)],
-          ['Arus kas bersih estimasi', formatRp(reportData.estimatedNetCashFlow)],
-          ['HPP barang terjual', formatRp(reportData.costOfGoodsSold)],
-          ['Laba kotor', formatRp(reportData.grossProfit)],
-          ['Laba bersih estimasi', formatRp(reportData.netProfit)],
-          ['Total diskon', formatRp(reportData.discountTotal)],
-          ['Pembelian stok', formatRp(reportData.stockPurchaseCashOut)],
-          ['Kerugian stok', formatRp(reportData.operationalLoss)],
-          ['Penerimaan tunai', formatRp(cashReceipts)],
-          ['Penerimaan non-tunai', formatRp(nonCashReceipts)],
-          ['Uang tunai diterima', formatRp(cashCollected)],
-          ['Total kembalian', formatRp(cashChange)],
-          ['Jumlah transaksi / unit', `${reportData.periodTransactions.length} / ${totalUnitsSold}`],
-        ];
-        const financialRows = [];
-        for (let index = 0; index < financialSummary.length; index += 2) {
-          const left = financialSummary[index];
-          const right = financialSummary[index + 1] || ['', ''];
-          financialRows.push([left[0], left[1], right[0], right[1]]);
-        }
-        addTable(['Keterangan', 'Nilai', 'Keterangan', 'Nilai'], financialRows, {
-          columnStyles: { 0: { cellWidth: 58 }, 1: { cellWidth: 70 }, 2: { cellWidth: 58 }, 3: { cellWidth: 70 } },
-        });
-
-        addSection('ANALISIS');
-        const analysisText = `Periode ini mencatat ${reportData.periodTransactions.length} transaksi dan ${totalUnitsSold} unit terjual. Penjualan sebelum diskon ${formatRp(grossSales)}, diskon ${formatRp(reportData.discountTotal)}, dan penerimaan setelah diskon ${formatRp(reportData.revenue)}. Margin laba kotor ${reportData.revenue ? `${((reportData.grossProfit / reportData.revenue) * 100).toFixed(1)}%` : '0%'}. Arus kas bersih estimasi menghitung penerimaan dikurangi pembelian stok dan kerugian stok. Laba bersih estimasi menghitung penjualan dikurangi HPP barang terjual dan kerugian stok.`;
-        const analysisLines = pdf.splitTextToSize(analysisText, pageWidth - margin * 2);
-        if (cursorY + analysisLines.length * 4 > pageHeight - 12) {
-          pdf.addPage();
-          cursorY = 16;
-        }
-        pdf.setFont('helvetica', 'normal');
-        pdf.setFontSize(8);
-        pdf.setTextColor(45, 50, 48);
-        pdf.text(analysisLines, margin, cursorY);
-        cursorY += analysisLines.length * 4 + 5;
-
-        addSection('RINGKASAN PRODUK TERJUAL');
-        addTable(
-          ['Produk', 'Qty terjual', 'HPP total', 'Hemat promo', 'Penjualan setelah promo', 'Laba kotor'],
-          reportData.soldList.length
-            ? reportData.soldList.map((item) => [item.name, item.qty, formatRp(item.hpp), formatRp(item.promotionDiscount), formatRp(item.total), formatRp(item.total - item.hpp)])
-            : [['Tidak ada produk terjual pada periode ini.', '', '', '', '', '']],
-        );
-
-        addSection(`PRODUK TIDAK TERJUAL (${reportData.unsoldProducts.length})`);
-        addTable(
-          ['Produk', 'Kategori', 'Stok saat ini'],
-          reportData.unsoldProducts.length
-            ? reportData.unsoldProducts.map((item) => [item.name, item.category || '-', item.stock])
-            : [['Semua produk memiliki penjualan.', '', '']],
-        );
-
-        addSection('RINGKASAN METODE PEMBAYARAN');
-        addTable(
-          ['Metode', 'Jumlah transaksi', 'Total penerimaan'],
-          reportData.paymentSummary.length
-            ? reportData.paymentSummary.map((item) => [item.method || 'Tidak diketahui', item.count, formatRp(item.total)])
-            : [['Belum ada transaksi.', '', '']],
-        );
-
-        addSection('RINCIAN PENJUALAN PER TRANSAKSI (DIKELOMPOKKAN PER KASIR)');
-        if (!reportData.periodTransactions.length) {
-          addTable(['Informasi'], [['Belum ada penjualan pada periode ini.']]);
-        }
-        cashierNames.forEach((cashierName) => {
-          const cashierTxList = txByCashier[cashierName];
-          const cashierTotal = cashierTxList.reduce((sum, tx) => sum + (tx.total || 0), 0);
-          const cashierUnits = cashierTxList.reduce((sum, tx) => sum + (tx.items || []).reduce((s, i) => s + (i.qty || 0), 0), 0);
-          // Cashier header bar
-          if (cursorY > pageHeight - 30) { pdf.addPage(); cursorY = 16; }
-          pdf.setFillColor(4, 120, 87);
-          pdf.rect(margin, cursorY - 4, pageWidth - margin * 2, 8, 'F');
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(9);
-          pdf.setTextColor(255, 255, 255);
-          pdf.text(`Kasir: ${cashierName}`, margin + 2, cursorY + 1);
-          pdf.setFontSize(8);
-          pdf.text(`${cashierTxList.length} transaksi  |  ${cashierUnits} unit  |  ${formatRp(cashierTotal)}`, pageWidth - margin - 2, cursorY + 1, { align: 'right' });
-          cursorY += 8;
-          cashierTxList.forEach((transaction) => {
-            if (cursorY > pageHeight - 38) {
-              pdf.addPage();
-              cursorY = 16;
-            }
-            const items = transaction.items || [];
-            const itemSubtotal = items.reduce((sum, item) => sum + (item.price || 0) * (item.qty || 0), 0);
-            const subtotal = transaction.subtotal ?? itemSubtotal;
-            const discount = transaction.discountAmount || 0;
-            const promotionDiscount = transaction.promotionDiscountAmount ?? items.reduce((sum, item) => (
-              sum + Math.max(0, (item.regularPrice || item.price || 0) - (item.price || 0)) * (item.qty || 0)
-            ), 0);
-            const total = transaction.total ?? Math.max(0, subtotal - promotionDiscount - discount);
-            const received = transaction.cashAmount ?? total;
-            const customerName = transaction.customer?.name || transaction.customerName || 'Pelanggan Umum';
-            pdf.setFont('helvetica', 'bold');
-            pdf.setFontSize(8);
-            pdf.setTextColor(25, 55, 43);
-            pdf.text(`${transaction.id} | ${new Date(transaction.date).toLocaleString('id-ID')}`, margin, cursorY);
-            cursorY += 4;
-            pdf.setFont('helvetica', 'normal');
-            pdf.setTextColor(45, 50, 48);
-            const meta = `Pelanggan: ${customerName}${transaction.customer?.phone ? ` (${transaction.customer.phone})` : ''} | Pembayaran: ${transaction.method || '-'}`;
-            const metaLines = pdf.splitTextToSize(meta, pageWidth - margin * 2);
-            pdf.text(metaLines, margin, cursorY);
-            cursorY += metaLines.length * 3.5 + 1;
-            addTable(
-              ['Barang', 'Qty', 'Harga jual/unit', 'HPP/unit', 'Penjualan', 'HPP', 'Laba kotor'],
-              items.length
-                ? items.map((item) => {
-                  const qty = item.qty || 0;
-                  const sales = (item.price || 0) * qty;
-                  const itemHpp = (item.hpp || 0) * qty;
-                  return [item.name, qty, formatRp(item.price || 0), formatRp(item.hpp || 0), formatRp(sales), formatRp(itemHpp), formatRp(sales - itemHpp)];
-                })
-                : [['Rincian barang tidak tersedia.', '', '', '', '', '', '']],
-            );
-            const discountLabel = transaction.discountType === 'percent'
-              ? `${transaction.discountValue || 0}%`
-              : formatRp(transaction.discountValue || discount);
-            const settlementRows = [
-              ['Subtotal normal', formatRp(subtotal), 'Hemat paket promo', `- ${formatRp(promotionDiscount)}`],
-              ['Diskon tambahan', `${discountLabel} (-${formatRp(discount)})`, 'Total tagihan', formatRp(total)],
-              [transaction.method === 'Tunai' ? 'Uang diterima' : 'Dibayar', formatRp(received), '', ''],
-            ];
-            if (transaction.method === 'Tunai') {
-              settlementRows.push(['Kembalian', formatRp(transaction.changeAmount ?? Math.max(0, received - total)), '', '']);
-            }
-            addTable(['Keterangan', 'Nilai', 'Keterangan', 'Nilai'], settlementRows, {
-              columnStyles: { 0: { cellWidth: 45 }, 1: { cellWidth: 65 }, 2: { cellWidth: 45 }, 3: { cellWidth: 65 } },
-            });
-          });
-          // Cashier sub-total bar
-          if (cursorY > pageHeight - 12) { pdf.addPage(); cursorY = 16; }
-          pdf.setFillColor(238, 245, 241);
-          pdf.rect(margin, cursorY - 2, pageWidth - margin * 2, 7, 'F');
-          pdf.setDrawColor(4, 120, 87);
-          pdf.rect(margin, cursorY - 2, pageWidth - margin * 2, 7, 'S');
-          pdf.setFont('helvetica', 'bold');
-          pdf.setFontSize(8);
-          pdf.setTextColor(25, 55, 43);
-          pdf.text(`Sub-total Kasir ${cashierName}:  ${cashierTxList.length} transaksi  |  ${cashierUnits} unit  |  ${formatRp(cashierTotal)}`, margin + 2, cursorY + 3);
-          cursorY += 12;
-        });
-
-        addSection('MUTASI STOK PADA PERIODE INI');
-        addTable(
-          ['Tanggal', 'Jenis', 'Produk', 'Selisih qty', 'HPP/unit', 'Nilai HPP', 'Petugas', 'Keterangan'],
-          reportData.periodMutations.length
-            ? reportData.periodMutations.map((mutation) => {
-              const product = products.find((item) => item.id === mutation.productId);
-              const typeLabel = mutation.type === 'in' ? 'Stok masuk' : mutation.type === 'out' ? 'Stok keluar' : 'Koreksi stok';
-              const unitCost = product?.hpp || 0;
-              return [formatDateInput(mutation.date), typeLabel, product?.name || mutation.productId, `${mutation.qty > 0 ? '+' : ''}${mutation.qty}`, formatRp(unitCost), formatRp(Math.abs(mutation.qty || 0) * unitCost), mutation.operator || '-', mutation.note || '-'];
-            })
-            : [['Tidak ada mutasi stok pada periode ini.', '', '', '', '', '', '', '']],
-        );
-
-        downloadPdfDocument(pdf, `laporan-keuangan-${reportPeriod}-${formatDateInput(new Date())}.pdf`);
-        return;
-      }
-      const file = await Print.printToFileAsync({ html });
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(file.uri, { mimeType: 'application/pdf', dialogTitle: 'Simpan atau bagikan laporan PDF', UTI: 'com.adobe.pdf' });
-      } else {
-        Alert.alert('PDF dibuat', `Laporan tersimpan di ${file.uri}`);
-      }
-    } catch (error) {
-      console.error('Financial PDF export error:', error);
-      throw error;
-    }
-  };
 
   const cartCalculations = useMemo(() => {
     let subtotal = 0;
@@ -3322,7 +3139,7 @@ export default function App() {
       setProdBarcode(product.barcode);
       setProdName(product.name);
       setProdCategory(product.category);
-      setProdStock((product.stock || 0).toString());
+      setProdStock('');
       setProdHpp((product.hpp || 0).toString());
       setProdPrice(product.price.toString());
       setIsPromotionProduct(!!product.isPromotion);
@@ -3343,6 +3160,7 @@ export default function App() {
   };
 
   const saveProduct = async () => {
+    if (productSaveLockRef.current) return;
     if (!isSuperAdmin) {
       Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menambah atau mengubah produk dan stok.');
       return;
@@ -3352,7 +3170,13 @@ export default function App() {
       return;
     }
 
-    const stockNum = parseInt(prodStock) || 0;
+    const stockInput = prodStock.trim();
+    const parsedStock = stockInput === '' ? 0 : Number(stockInput);
+    if (!Number.isInteger(parsedStock) || parsedStock < 0) {
+      Alert.alert('Validasi Error', 'Masukkan jumlah stok berupa bilangan bulat nol atau lebih.');
+      return;
+    }
+    const stockNum = parsedStock;
     const enteredHpp = parseFloat(prodHpp) || 0;
     const priceNum = parseFloat(prodPrice) || 0;
     const selectedPromotionItems = isPromotionProduct
@@ -3379,29 +3203,47 @@ export default function App() {
       return;
     }
 
+    productSaveLockRef.current = true;
+    setIsProductSaving(true);
+    try {
     if (editingProduct) {
       const updatedData = {
         barcode: prodBarcode,
         name: prodName,
         category: isPromotionProduct ? 'Promo' : prodCategory,
-        stock: isPromotionProduct ? 0 : stockNum,
         hpp: hppNum,
         price: priceNum,
         isPromotion: isPromotionProduct,
         regularPrice,
         promotionItems: selectedPromotionItems,
       };
-      setProducts((prev) =>
-        prev.map((p) =>
-          p.id === editingProduct.id ? { ...p, ...updatedData } : p
-        )
-      );
-      // Write to Firestore
-      try {
+      let updatedStock;
+      if (isPromotionProduct) {
+        await fbUpdateProduct(editingProduct.id, { ...updatedData, stock: 0 });
+        updatedStock = 0;
+      } else if (stockNum > 0) {
+        const mutation = {
+          id: 'M' + Date.now(),
+          date: new Date(),
+          productId: editingProduct.id,
+          shiftId: activeShiftId,
+          type: 'in',
+          qty: stockNum,
+          hpp: hppNum,
+          note: 'Penambahan stok melalui produk',
+          operator: currentUser.name,
+        };
+        updatedStock = await fbUpdateProductAndAddStock(editingProduct.id, updatedData, mutation);
+        setMutations((previous) => [mutation, ...previous]);
+      } else {
         await fbUpdateProduct(editingProduct.id, updatedData);
-      } catch (e) {
-        console.error('Firestore update product error:', e);
       }
+
+      setProducts((previous) => previous.map((product) => (
+        product.id === editingProduct.id
+          ? { ...product, ...updatedData, stock: updatedStock ?? product.stock }
+          : product
+      )));
     } else {
       const newProd = {
         id: 'P' + Date.now(),
@@ -3417,16 +3259,18 @@ export default function App() {
         regularPrice,
         promotionItems: selectedPromotionItems,
       };
+      await fbAddProduct(newProd);
       setProducts((prev) => [newProd, ...prev]);
-      // Write to Firestore
-      try {
-        await fbAddProduct(newProd);
-      } catch (e) {
-        console.error('Firestore add product error:', e);
-      }
     }
 
     setIsProductModalOpen(false);
+    } catch (error) {
+      console.error('Firestore save product error:', error);
+      Alert.alert('Gagal menyimpan produk', 'Perubahan produk atau stok belum tersimpan. Periksa koneksi, lalu coba lagi.');
+    } finally {
+      productSaveLockRef.current = false;
+      setIsProductSaving(false);
+    }
   };
 
   const deleteProduct = (id) => {
@@ -3466,6 +3310,8 @@ export default function App() {
       Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menambah atau merubah stok.');
       return;
     }
+    if (isSubmittingMutation) return;
+
     const qtyNum = parseInt(mutQty);
     if (!qtyNum || qtyNum <= 0) {
       Alert.alert('Error', 'Masukkan jumlah Qty mutasi yang valid.');
@@ -3473,15 +3319,20 @@ export default function App() {
     }
 
     const prod = products.find((p) => p.id === mutProdId);
-    if (!prod) return;
+    if (!prod) {
+      Alert.alert('Error', 'Pilih produk yang valid.');
+      return;
+    }
 
     if (mutType === 'out' && qtyNum > prod.stock) {
       Alert.alert('Error', 'Stok keluar melebihi sisa stok saat ini.');
       return;
     }
 
+    setIsSubmittingMutation(true);
     const newStock = mutType === 'in' ? prod.stock + qtyNum : prod.stock - qtyNum;
 
+    // Update produk di state lokal langsung
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id === mutProdId) {
@@ -3502,19 +3353,93 @@ export default function App() {
       operator: currentUser.name,
     };
 
-    setMutations((prev) => [newMutation, ...prev]);
+    setMutations((prev) => {
+      if (prev.some((m) => m.id === newMutation.id)) return prev;
+      return [newMutation, ...prev];
+    });
 
-    // Write to Firestore
     try {
       await fbAddMutation(newMutation);
       await updateProductStock(mutProdId, newStock);
+      Alert.alert('Sukses', `Mutasi stok berhasil dicatat. Stok sekarang: ${newStock} unit.`);
     } catch (e) {
       console.error('Firestore mutation error:', e);
+      Alert.alert('Peringatan', 'Mutasi tercatat lokal namun gagal sinkron ke cloud. Periksa koneksi internet.');
+    } finally {
+      setIsSubmittingMutation(false);
+      setIsMutationModalOpen(false);
+      setMutQty('');
+      setMutNote('');
+    }
+  };
+
+  // Handler Khusus Tambah Stok / Restock Otomatis
+  const handleSaveRestock = async () => {
+    if (!isSuperAdmin) {
+      Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak menambah stok restock.');
+      return;
+    }
+    if (isSubmittingMutation) return;
+
+    const qtyNum = parseInt(restockQty);
+    if (!qtyNum || qtyNum <= 0) {
+      Alert.alert('Error', 'Masukkan jumlah Qty barang masuk yang valid.');
+      return;
     }
 
-    setIsMutationModalOpen(false);
-    setMutQty('');
-    setMutNote('');
+    const prod = products.find((p) => p.id === restockProdId);
+    if (!prod) {
+      Alert.alert('Error', 'Pilih produk yang akan direstock.');
+      return;
+    }
+
+    setIsSubmittingMutation(true);
+    const newStock = (prod.stock || 0) + qtyNum;
+    const newHpp = restockHpp ? parseFloat(restockHpp) : (prod.hpp || 0);
+
+    // Update stok & HPP produk secara otomatis di master
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id === restockProdId) {
+          return { ...p, stock: newStock, hpp: newHpp };
+        }
+        return p;
+      })
+    );
+
+    const newMutation = {
+      id: 'RESTOCK-' + Date.now(),
+      date: new Date(),
+      productId: restockProdId,
+      shiftId: activeShiftId,
+      type: 'in',
+      qty: qtyNum,
+      note: restockNote || `Restock masuk +${qtyNum} unit (@ ${formatRp(newHpp)})`,
+      operator: currentUser.name,
+    };
+
+    setMutations((prev) => {
+      if (prev.some((m) => m.id === newMutation.id)) return prev;
+      return [newMutation, ...prev];
+    });
+
+    try {
+      await fbAddMutation(newMutation);
+      await updateProductStock(restockProdId, newStock);
+      if (restockHpp && parseFloat(restockHpp) !== prod.hpp) {
+        await fbUpdateProduct(restockProdId, { hpp: newHpp });
+      }
+      Alert.alert('Sukses', `Stok ${prod.name} bertambah +${qtyNum} unit secara otomatis! Total stok sekarang: ${newStock} unit.`);
+    } catch (e) {
+      console.error('Firestore restock error:', e);
+      Alert.alert('Peringatan', 'Stok bertambah di perangkat namun gagal sinkron ke cloud.');
+    } finally {
+      setIsSubmittingMutation(false);
+      setIsRestockModalOpen(false);
+      setRestockQty('');
+      setRestockHpp('');
+      setRestockNote('');
+    }
   };
 
   const handleSaveStockCorrection = async () => {
@@ -3522,6 +3447,8 @@ export default function App() {
       Alert.alert('Akses Ditolak', 'Hanya Super Admin yang berhak melakukan koreksi atau opname stok.');
       return;
     }
+    if (isSubmittingMutation) return;
+
     const physQty = parseInt(corrPhysicalStock);
     if (isNaN(physQty) || physQty < 0) {
       Alert.alert('Error', 'Masukkan jumlah stok fisik yang valid.');
@@ -3531,6 +3458,7 @@ export default function App() {
     const prod = products.find((p) => p.id === corrProdId);
     if (!prod) return;
 
+    setIsSubmittingMutation(true);
     const diff = physQty - prod.stock;
 
     setProducts((prev) =>
@@ -3538,7 +3466,7 @@ export default function App() {
     );
 
     const newMutation = {
-      id: 'M' + Date.now(),
+      id: 'OPNAME-' + Date.now(),
       date: new Date(),
       productId: corrProdId,
       shiftId: activeShiftId,
@@ -3548,19 +3476,23 @@ export default function App() {
       operator: currentUser.name,
     };
 
-    setMutations((prev) => [newMutation, ...prev]);
+    setMutations((prev) => {
+      if (prev.some((m) => m.id === newMutation.id)) return prev;
+      return [newMutation, ...prev];
+    });
 
-    // Write to Firestore
     try {
       await fbAddMutation(newMutation);
       await updateProductStock(corrProdId, physQty);
+      Alert.alert('Sukses', `Koreksi stok fisik disimpan. Selisih: ${diff > 0 ? '+' : ''}${diff} unit. Stok sekarang: ${physQty} unit.`);
     } catch (e) {
       console.error('Firestore stock correction error:', e);
+      Alert.alert('Peringatan', 'Koreksi tersimpan lokal namun gagal sinkron ke cloud.');
+    } finally {
+      setIsSubmittingMutation(false);
+      setIsStockCorrectionOpen(false);
+      setCorrPhysicalStock('');
     }
-
-    setIsStockCorrectionOpen(false);
-    setCorrPhysicalStock('');
-    Alert.alert('Sukses', `Koreksi stok disimpan. Selisih: ${diff > 0 ? '+' : ''}${diff} unit.`);
   };
 
   const handleAddUser = async () => {
@@ -4424,15 +4356,56 @@ export default function App() {
                     </View>
                   </View>
 
-                  <View style={styles.mutationTopBar}>
-                    <TouchableOpacity style={[styles.mutActionBtn, { backgroundColor: '#0284c7' }]} onPress={() => setIsMutationModalOpen(true)}>
-                      <Feather name="plus-circle" size={16} color="#fff" />
-                      <Text style={styles.mutActionBtnText}>Catat Mutasi</Text>
+                  <View style={[styles.mutationTopBar, { flexWrap: 'wrap', gap: 8 }]}>
+                    <TouchableOpacity
+                      style={[styles.mutActionBtn, { backgroundColor: '#059669', flex: 1.2, minWidth: 160 }]}
+                      onPress={() => {
+                        setRestockQty('');
+                        setRestockNote('');
+                        setRestockSearch('');
+                        const firstProd = products[0];
+                        if (firstProd) {
+                          setRestockProdId(firstProd.id);
+                          setRestockHpp(String(firstProd.hpp || 0));
+                        }
+                        setIsRestockModalOpen(true);
+                      }}
+                    >
+                      <Feather name="package" size={16} color="#fff" />
+                      <Text style={styles.mutActionBtnText}>+ Tambah Stok Otomatis</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={[styles.mutActionBtn, { backgroundColor: '#7c3aed' }]} onPress={() => setIsStockCorrectionOpen(true)}>
+                    <TouchableOpacity
+                      style={[styles.mutActionBtn, { backgroundColor: '#0284c7', flex: 0.8, minWidth: 100 }]}
+                      onPress={() => {
+                        setMutQty('');
+                        setMutNote('');
+                        setMutSearch('');
+                        setIsMutationModalOpen(true);
+                      }}
+                    >
+                      <Feather name="plus-circle" size={16} color="#fff" />
+                      <Text style={styles.mutActionBtnText}>Mutasi</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.mutActionBtn, { backgroundColor: '#7c3aed', flex: 0.8, minWidth: 100 }]}
+                      onPress={() => {
+                        setCorrPhysicalStock('');
+                        setCorrSearch('');
+                        setIsStockCorrectionOpen(true);
+                      }}
+                    >
                       <Feather name="check-square" size={16} color="#fff" />
-                      <Text style={styles.mutActionBtnText}>Stock Opname</Text>
+                      <Text style={styles.mutActionBtnText}>Opname</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[styles.mutActionBtn, { backgroundColor: '#d97706', flex: 1.1, minWidth: 150 }]}
+                      onPress={() => runPngExport(downloadIncomingStockReportPng)}
+                    >
+                      <Feather name="image" size={16} color="#fff" />
+                      <Text style={styles.mutActionBtnText}>PNG Barang Masuk</Text>
                     </TouchableOpacity>
                   </View>
 
@@ -4620,35 +4593,35 @@ export default function App() {
                   <Text style={styles.reportPeriodLabel}>{reportData.periodLabel}</Text>
                   <View style={styles.reportDownloadRow}>
                     <TouchableOpacity
-                      style={[styles.reportDownloadBtn, styles.reportDownloadBtnFinancial, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                      onPress={() => runPdfExport(downloadFinancialPdf)}
-                      disabled={!pdfModulesReady || pdfExporting}
+                      style={[styles.reportDownloadBtn, styles.reportDownloadBtnFinancial, reportExporting && styles.reportDownloadBtnDisabled]}
+                      onPress={() => runPngExport(downloadFinancialReportPng)}
+                      disabled={reportExporting}
                     >
                       <Feather name="file-text" size={15} color="#fff" />
-                      <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'Buat PDF Lengkap'}</Text>
+                      <Text style={styles.reportDownloadText}>{reportExporting ? 'Membuat PNG...' : 'Laporan Lengkap PNG'}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      style={[styles.reportDownloadBtn, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                      onPress={() => runPdfExport(downloadSalesReport)}
-                      disabled={!pdfModulesReady || pdfExporting}
+                      style={[styles.reportDownloadBtn, reportExporting && styles.reportDownloadBtnDisabled]}
+                      onPress={() => runPngExport(downloadSalesReportPng)}
+                      disabled={reportExporting}
                     >
                       <Feather name="download" size={15} color="#fff" />
-                      <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Penjualan'}</Text>
+                      <Text style={styles.reportDownloadText}>{reportExporting ? 'Membuat PNG...' : 'PNG Penjualan'}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
-                      style={[styles.reportDownloadBtn, styles.reportDownloadBtnStock, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                      onPress={() => runPdfExport(downloadStockReport)}
-                      disabled={!pdfModulesReady || pdfExporting}
+                      style={[styles.reportDownloadBtn, styles.reportDownloadBtnStock, reportExporting && styles.reportDownloadBtnDisabled]}
+                      onPress={() => runPngExport(downloadIncomingStockReportPng)}
+                      disabled={reportExporting}
                     >
                       <Feather name="download" size={15} color="#fff" />
-                      <Text style={styles.reportDownloadText}>{pdfExporting ? 'Membuat PDF...' : 'PDF Stok'}</Text>
+                      <Text style={styles.reportDownloadText}>{reportExporting ? 'Membuat PNG...' : 'PNG Barang Masuk'}</Text>
                     </TouchableOpacity>
                   </View>
-                  {!!pdfExportStatus && <Text style={styles.reportPdfStatus}>{pdfExportStatus}</Text>}
+                  {!!reportExportStatus && <Text style={styles.reportPdfStatus}>{reportExportStatus}</Text>}
                 </View>
 
                 <Text style={styles.reportHint}>
-                  PDF mengikuti periode terpilih dan berisi ringkasan keuangan, analisis produk, pembayaran, serta rincian transaksi.
+                  Laporan lengkap mengikuti periode terpilih. Laporan penjualan dan barang masuk mencakup seluruh data yang tersimpan.
                 </Text>
 
                 <View style={styles.reportMetricGrid}>
@@ -4682,7 +4655,7 @@ export default function App() {
                     <Text style={styles.reportMethod}>Stok {item.stock}</Text>
                   </View>
                 ))}
-                {reportData.unsoldProducts.length > 20 && <Text style={styles.reportEmpty}>Daftar lengkap tersedia di PDF.</Text>}
+                {reportData.unsoldProducts.length > 20 && <Text style={styles.reportEmpty}>Daftar lengkap tersedia di PNG.</Text>}
 
                 <Text style={styles.sectionTitle}>Metode Pembayaran</Text>
                 {reportData.paymentSummary.length ? reportData.paymentSummary.map((item) => (
@@ -4702,12 +4675,12 @@ export default function App() {
                     Riwayat Transaksi Penjualan ({filteredTransactions.length})
                   </Text>
                   <TouchableOpacity
-                    style={[styles.reportDownloadBtn, { marginVertical: 0, paddingHorizontal: 12, height: 36 }, (!pdfModulesReady || pdfExporting) && styles.reportDownloadBtnDisabled]}
-                    onPress={() => runPdfExport(downloadSalesReport)}
-                    disabled={!pdfModulesReady || pdfExporting}
+                    style={[styles.reportDownloadBtn, { marginVertical: 0, paddingHorizontal: 12, height: 36 }, reportExporting && styles.reportDownloadBtnDisabled]}
+                    onPress={() => runPngExport(downloadSalesReportPng)}
+                    disabled={reportExporting}
                   >
                     <Feather name="download" size={14} color="#fff" />
-                    <Text style={[styles.reportDownloadText, { fontSize: 12 }]}>{pdfExporting ? 'Membuat...' : 'Download PDF'}</Text>
+                    <Text style={[styles.reportDownloadText, { fontSize: 12 }]}>{reportExporting ? 'Membuat...' : 'Download PNG'}</Text>
                   </TouchableOpacity>
                 </View>
 
@@ -5697,21 +5670,131 @@ export default function App() {
                 <>
                   <TextInput style={styles.modalInput} placeholder="Barcode SKU" placeholderTextColor="#64748b" value={prodBarcode} onChangeText={setProdBarcode} />
                   <TextInput style={styles.modalInput} placeholder="Kategori" placeholderTextColor="#64748b" value={prodCategory} onChangeText={setProdCategory} />
-                  <TextInput style={styles.modalInput} placeholder="Stok Awal" keyboardType="numeric" placeholderTextColor="#64748b" value={prodStock} onChangeText={setProdStock} />
+                  <TextInput
+                    style={styles.modalInput}
+                    placeholder={editingProduct ? 'Jumlah Stok yang Ditambahkan' : 'Stok Awal'}
+                    keyboardType="numeric"
+                    placeholderTextColor="#64748b"
+                    value={prodStock}
+                    onChangeText={setProdStock}
+                  />
+                  {editingProduct && (
+                    <Text style={{ color: '#64748b', fontSize: 12, marginBottom: 8 }}>
+                      Stok saat ini {editingProduct.stock || 0}. Masukkan jumlah tambahan; stok akan dijumlahkan otomatis.
+                    </Text>
+                  )}
                   <TextInput style={styles.modalInput} placeholder="Modal HPP (Rp)" keyboardType="numeric" placeholderTextColor="#64748b" value={prodHpp} onChangeText={setProdHpp} />
                   <TextInput style={styles.modalInput} placeholder="Harga Jual (Rp)" keyboardType="numeric" placeholderTextColor="#64748b" value={prodPrice} onChangeText={setProdPrice} />
                 </>
               )}
 
               <View style={styles.modalActions}>
-                <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsProductModalOpen(false)}>
+                <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsProductModalOpen(false)} disabled={isProductSaving}>
                   <Text style={styles.cancelBtnText}>Batal</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.saveModalBtn} onPress={saveProduct}>
-                  <Text style={styles.saveModalBtnText}>{isPromotionProduct ? 'Simpan Barang Promosi' : 'Simpan Produk'}</Text>
+                <TouchableOpacity style={styles.saveModalBtn} onPress={saveProduct} disabled={isProductSaving}>
+                  <Text style={styles.saveModalBtnText}>
+                    {isProductSaving ? 'Menyimpan...' : isPromotionProduct ? 'Simpan Barang Promosi' : 'Simpan Produk'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Tambah Stok Otomatis (Restock) */}
+      <Modal visible={isRestockModalOpen} animationType="slide" transparent>
+        <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
+          <View style={[styles.modalBox, { maxWidth: 440 }]} className={Platform.OS === 'web' ? 'app-modal-box' : undefined}>
+            <Text style={styles.modalTitle}>Tambah Stok Masuk (Otomatis)</Text>
+            <Text style={{ color: '#94a3b8', fontSize: 12, marginBottom: 10 }}>
+              Pilih produk dan masukkan jumlah barang masuk. Stok produk di kasir akan bertambah secara otomatis.
+            </Text>
+
+            {/* Input Pencarian Produk */}
+            <TextInput
+              style={[styles.modalInput, { marginBottom: 6 }]}
+              placeholder="Cari nama produk..."
+              placeholderTextColor="#64748b"
+              value={restockSearch}
+              onChangeText={setRestockSearch}
+            />
+
+            {/* Selector Produk */}
+            <ScrollView style={{ maxHeight: 120, marginBottom: 12, borderWidth: 1, borderColor: '#334155', borderRadius: 8, backgroundColor: '#0f172a' }}>
+              {products
+                .filter(p => !p.isPromotion && (p.name || '').toLowerCase().includes((restockSearch || '').toLowerCase()))
+                .map((p) => (
+                  <TouchableOpacity
+                    key={p.id}
+                    style={{
+                      padding: 10,
+                      borderBottomWidth: 1,
+                      borderColor: '#1e293b',
+                      backgroundColor: restockProdId === p.id ? '#065f46' : 'transparent',
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                    }}
+                    onPress={() => {
+                      setRestockProdId(p.id);
+                      setRestockHpp(String(p.hpp || 0));
+                    }}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: restockProdId === p.id ? 'bold' : 'normal' }}>
+                      {p.name}
+                    </Text>
+                    <Text style={{ color: '#34d399', fontSize: 11 }}>
+                      Stok: {p.stock} pcs
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+            </ScrollView>
+
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Jumlah Tambahan Stok (Qty Masuk)"
+              keyboardType="numeric"
+              placeholderTextColor="#64748b"
+              value={restockQty}
+              onChangeText={setRestockQty}
+            />
+
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Harga Beli / HPP Baru (Opsional)"
+              keyboardType="numeric"
+              placeholderTextColor="#64748b"
+              value={restockHpp}
+              onChangeText={setRestockHpp}
+            />
+
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Catatan / No. Faktur / Supplier"
+              placeholderTextColor="#64748b"
+              value={restockNote}
+              onChangeText={setRestockNote}
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.cancelBtn}
+                onPress={() => setIsRestockModalOpen(false)}
+                disabled={isSubmittingMutation}
+              >
+                <Text style={styles.cancelBtnText}>Batal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.saveModalBtn, { backgroundColor: '#059669', opacity: isSubmittingMutation ? 0.7 : 1 }]}
+                onPress={handleSaveRestock}
+                disabled={isSubmittingMutation}
+              >
+                <Text style={styles.saveModalBtnText}>
+                  {isSubmittingMutation ? 'Menyimpan...' : 'Tambah Stok Otomatis'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -5721,15 +5804,64 @@ export default function App() {
         <View style={styles.modalOverlay} className={Platform.OS === 'web' ? 'app-modal-overlay' : undefined}>
           <View style={styles.modalBox} className={Platform.OS === 'web' ? 'app-modal-box' : undefined}>
             <Text style={styles.modalTitle}>Catat Mutasi Stok</Text>
+            <TextInput
+              style={[styles.modalInput, { marginBottom: 6 }]}
+              placeholder="Cari nama produk mutasi..."
+              placeholderTextColor="#64748b"
+              value={mutSearch}
+              onChangeText={setMutSearch}
+            />
+            <ScrollView style={{ maxHeight: 110, marginBottom: 12, borderWidth: 1, borderColor: '#334155', borderRadius: 8, backgroundColor: '#0f172a' }}>
+              {products
+                .filter(p => !p.isPromotion && (p.name || '').toLowerCase().includes((mutSearch || '').toLowerCase()))
+                .map((p) => (
+                  <TouchableOpacity
+                    key={p.id}
+                    style={{
+                      padding: 9,
+                      borderBottomWidth: 1,
+                      borderColor: '#1e293b',
+                      backgroundColor: mutProdId === p.id ? '#0284c7' : 'transparent',
+                      flexDirection: 'row',
+                      justifyContent: 'space-between',
+                    }}
+                    onPress={() => setMutProdId(p.id)}
+                  >
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: mutProdId === p.id ? 'bold' : 'normal' }}>
+                      {p.name}
+                    </Text>
+                    <Text style={{ color: '#38bdf8', fontSize: 11 }}>
+                      Stok: {p.stock}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+            </ScrollView>
+            <View style={{ flexDirection: 'row', gap: 8, marginBottom: 12 }}>
+              <TouchableOpacity
+                style={{ flex: 1, padding: 9, borderRadius: 6, backgroundColor: mutType === 'in' ? '#0284c7' : '#1e293b', alignItems: 'center' }}
+                onPress={() => setMutType('in')}
+              >
+                <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>Stok Masuk</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ flex: 1, padding: 9, borderRadius: 6, backgroundColor: mutType === 'out' ? '#ef4444' : '#1e293b', alignItems: 'center' }}
+                onPress={() => setMutType('out')}
+              >
+                <Text style={{ color: '#fff', fontSize: 12, fontWeight: 'bold' }}>Stok Keluar / Rusak</Text>
+              </TouchableOpacity>
+            </View>
             <TextInput style={styles.modalInput} placeholder="Qty Mutasi" keyboardType="numeric" placeholderTextColor="#64748b" value={mutQty} onChangeText={setMutQty} />
             <TextInput style={styles.modalInput} placeholder="Keterangan / Alasan" placeholderTextColor="#64748b" value={mutNote} onChangeText={setMutNote} />
+            <Text style={{ color: '#64748b', fontSize: 12, marginBottom: 8 }}>
+              Stok produk akan diperbarui otomatis setelah mutasi berhasil disimpan.
+            </Text>
 
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsMutationModalOpen(false)}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsMutationModalOpen(false)} disabled={isMutationSaving}>
                 <Text style={styles.cancelBtnText}>Batal</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveModalBtn} onPress={handleSaveMutation}>
-                <Text style={styles.saveModalBtnText}>Simpan Mutasi</Text>
+              <TouchableOpacity style={styles.saveModalBtn} onPress={handleSaveMutation} disabled={isMutationSaving}>
+                <Text style={styles.saveModalBtnText}>{isMutationSaving ? 'Menyimpan...' : 'Simpan Mutasi'}</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -5745,15 +5877,71 @@ export default function App() {
             <TextInput style={styles.modalInput} placeholder="Alasan Koreksi Audit" placeholderTextColor="#64748b" value={corrReason} onChangeText={setCorrReason} />
 
             <View style={styles.modalActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsStockCorrectionOpen(false)}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setIsStockCorrectionOpen(false)} disabled={isStockCorrectionSaving}>
                 <Text style={styles.cancelBtnText}>Batal</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.saveModalBtn, { backgroundColor: '#7c3aed' }]} onPress={handleSaveStockCorrection}>
-                <Text style={styles.saveModalBtnText}>Simpan Opname</Text>
+              <TouchableOpacity style={[styles.saveModalBtn, { backgroundColor: '#7c3aed' }]} onPress={handleSaveStockCorrection} disabled={isStockCorrectionSaving}>
+                <Text style={styles.saveModalBtnText}>{isStockCorrectionSaving ? 'Menyimpan...' : 'Simpan Opname'}</Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Native PNG report capture */}
+      <Modal visible={Platform.OS !== 'web' && Boolean(reportCapture)} animationType="none">
+        <ScrollView
+          ref={reportCaptureRef}
+          collapsable={false}
+          style={{ flex: 1, backgroundColor: '#ffffff' }}
+          contentContainerStyle={{ width: 800, padding: 28, backgroundColor: '#ffffff' }}
+        >
+          <Text style={{ color: '#065f46', fontSize: 22, fontWeight: '700' }}>TIPSY POINT</Text>
+          <Text style={{ color: '#1e293b', fontSize: 16, fontWeight: '700', marginTop: 8 }}>{reportCapture?.title}</Text>
+          <Text style={{ color: '#64748b', fontSize: 12, marginTop: 4 }}>
+            {reportCapture?.periodLabel ? `Periode: ${reportCapture.periodLabel} · ` : ''}Dicetak: {new Date().toLocaleString('id-ID')}
+          </Text>
+
+          {!!reportCapture?.metrics?.length && (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 18 }}>
+              {reportCapture.metrics.map(([label, value]) => (
+                <View key={label} style={{ width: '50%', minHeight: 44, padding: 8, backgroundColor: '#f8fafc' }}>
+                  <Text style={{ color: '#64748b', fontSize: 10, fontWeight: '700' }}>{label}</Text>
+                  <Text style={{ color: '#0f172a', fontSize: 12, fontWeight: '700', marginTop: 3 }}>{String(value)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+
+          {reportCapture?.sections?.map((section) => (
+            <View key={section.title} style={{ marginTop: 18 }}>
+              <Text style={{ color: '#0f172a', fontSize: 13, fontWeight: '700', marginBottom: 8 }}>{section.title}</Text>
+              <View style={{ flexDirection: 'row', backgroundColor: '#0f172a', paddingVertical: 8 }}>
+                {section.headers.map((header) => (
+                  <Text key={header} style={{ color: '#ffffff', flex: 1, fontSize: 9, fontWeight: '700', paddingHorizontal: 4 }}>
+                    {header}
+                  </Text>
+                ))}
+              </View>
+              {section.rows.length
+                ? section.rows.map((row, rowIndex) => (
+                  <View
+                    key={`${section.title}-${rowIndex}`}
+                    style={{ flexDirection: 'row', backgroundColor: rowIndex % 2 ? '#f8fafc' : '#ffffff', borderBottomWidth: 1, borderColor: '#e2e8f0', paddingVertical: 6 }}
+                  >
+                    {row.map((cell, cellIndex) => (
+                      <Text key={`${rowIndex}-${cellIndex}`} style={{ color: '#334155', flex: 1, fontSize: 9, paddingHorizontal: 4 }}>
+                        {String(cell ?? '-')}
+                      </Text>
+                    ))}
+                  </View>
+                ))
+                : (
+                  <Text style={{ color: '#64748b', fontSize: 10, paddingVertical: 8 }}>Tidak ada data pada bagian ini.</Text>
+                )}
+            </View>
+          ))}
+        </ScrollView>
       </Modal>
 
       {/* Receipt Modal */}

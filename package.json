@@ -9,9 +9,9 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "dev": "vite",
+    "dev": "vite --host 0.0.0.0 --port 3000",
     "build": "vite build",
-    "preview": "vite preview",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
     "pwa:generate": "node scripts/generate-pwa-assets.js"
   },
   "dependencies": {
@@ -28,8 +28,6 @@
     "expo-updates": "~57.0.26",
     "firebase": "^12.19.0",
     "html-to-image": "^1.11.13",
-    "jspdf": "^4.2.1",
-    "jspdf-autotable": "^5.0.8",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
